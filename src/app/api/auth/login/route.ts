@@ -2,12 +2,12 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import bcrypt from 'bcryptjs';
 import { checkRateLimit, getClientIp } from '@/lib/rate-limiter';
-import { createSessionToken } from '@/lib/auth-token';
+import { createClient } from '@/lib/supabase/server';
 
 export async function POST(req: Request) {
   try {
     const ip = getClientIp(req);
-    const rateCheck = checkRateLimit(`login_${ip}`, 5, 60);
+    const rateCheck = checkRateLimit(`login_${ip}`, 10, 60);
 
     if (!rateCheck.allowed) {
       return NextResponse.json(
@@ -31,10 +31,9 @@ export async function POST(req: Request) {
     }
 
     const clean = identifier.trim().toLowerCase();
-    const neonAuthBase = process.env.NEON_AUTH_BASE_URL;
     let targetEmail = clean;
 
-    // If identifier is handle, check if user exists in local DB to resolve email
+    // If identifier is handle, resolve email from database
     if (!clean.includes('@')) {
       const u = await prisma.user.findFirst({
         where: { handle: { equals: clean, mode: 'insensitive' } },
@@ -44,47 +43,39 @@ export async function POST(req: Request) {
       }
     }
 
-    let neonSetCookie: string | null = null;
-    let neonUser: { id: string; email: string; name?: string } | null = null;
+    let supabaseUser: { id: string; email?: string } | null = null;
 
-    // 1. Authenticate against Neon Managed Better Auth (if configured)
-    if (neonAuthBase) {
-      try {
-        const origin = req.headers.get('origin') || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-        const neonRes = await fetch(`${neonAuthBase}/sign-in/email`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Origin': origin,
-          },
-          body: JSON.stringify({ email: targetEmail, password }),
-        });
+    // 1. Authenticate with Supabase Auth
+    try {
+      const supabase = await createClient();
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email: targetEmail,
+        password,
+      });
 
-        const neonData = await neonRes.json().catch(() => null);
-        if (neonRes.ok && neonData?.user) {
-          neonUser = neonData.user;
-          neonSetCookie = neonRes.headers.get('set-cookie');
-        }
-      } catch (neonErr) {
-        console.warn('Neon Better Auth sign-in notice:', neonErr);
+      if (!authError && authData?.user) {
+        supabaseUser = authData.user;
       }
+    } catch (supabaseErr) {
+      if (typeof supabaseErr === 'object' && supabaseErr !== null && 'digest' in supabaseErr) throw supabaseErr;
+      console.warn('Supabase Auth sign-in notice:', supabaseErr);
     }
 
     let user = null;
 
-    if (neonUser) {
-      // Find or synchronize with application User record
+    if (supabaseUser) {
+      // Synchronize with application User record
       user = await prisma.user.findFirst({
-        where: { OR: [{ id: neonUser.id }, { email: neonUser.email }] },
+        where: { OR: [{ id: supabaseUser.id }, { email: supabaseUser.email }] },
       });
 
-      if (!user) {
+      if (!user && supabaseUser.email) {
         user = await prisma.user.create({
           data: {
-            id: neonUser.id,
-            email: neonUser.email,
-            handle: neonUser.name || neonUser.email.split('@')[0],
-            passwordHash: 'neon_better_auth',
+            id: supabaseUser.id,
+            email: supabaseUser.email,
+            handle: supabaseUser.email.split('@')[0],
+            passwordHash: 'supabase_auth',
             bulletRating: 1200,
             blitzRating: 1200,
             rapidRating: 1200,
@@ -93,14 +84,14 @@ export async function POST(req: Request) {
         });
       }
     } else {
-      // 2. Legacy fallback check
+      // 2. Fallback check for local password verification
       user = await prisma.user.findFirst({
         where: {
           OR: [{ handle: clean }, { email: clean }],
         },
       });
 
-      if (!user) {
+      if (!user || !user.passwordHash) {
         return NextResponse.json(
           { error: 'Invalid tactician credentials.' },
           { status: 401 }
@@ -116,20 +107,15 @@ export async function POST(req: Request) {
       }
     }
 
-    const token = createSessionToken({
-      id: user.id,
-      handle: user.handle,
-      email: user.email,
-    });
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Invalid tactician credentials.' },
+        { status: 401 }
+      );
+    }
 
-    const isProd = process.env.NODE_ENV === 'production';
-    const cookieHeader = `obscura_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${
-      isProd ? '; Secure' : ''
-    }`;
-
-    const res = NextResponse.json({
-      token,
-      neonAuth: Boolean(neonUser),
+    return NextResponse.json({
+      supabaseAuth: Boolean(supabaseUser),
       user: {
         id: user.id,
         handle: user.handle,
@@ -144,12 +130,6 @@ export async function POST(req: Request) {
         createdAt: user.createdAt,
       },
     });
-
-    res.headers.set('Set-Cookie', cookieHeader);
-    if (neonSetCookie) {
-      res.headers.append('Set-Cookie', neonSetCookie);
-    }
-    return res;
   } catch (error) {
     console.error('Login error:', error);
     return NextResponse.json(

@@ -1,14 +1,16 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { activeRooms, sanitizeRoomState, broadcastToRoom, startRoomClock } from '@/lib/room-manager';
+import { getDurableRoom, sanitizeRoomState, broadcastRealtimeEvent, startRoomClock } from '@/lib/room-manager';
 import { getSessionFromRequest } from '@/lib/auth-token';
+import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
 
 export async function GET(
   req: Request,
   context: { params: Promise<{ roomId: string }> }
 ) {
   const { roomId } = await context.params;
-  const room = activeRooms.get(roomId);
+  const room = await getDurableRoom(roomId);
 
   if (!room) {
     return NextResponse.json({ error: 'Room not found' }, { status: 404 });
@@ -22,7 +24,7 @@ export async function POST(
   context: { params: Promise<{ roomId: string }> }
 ) {
   const { roomId } = await context.params;
-  const room = activeRooms.get(roomId);
+  const room = await getDurableRoom(roomId);
 
   if (!room) {
     return NextResponse.json({ error: 'Room not found' }, { status: 404 });
@@ -30,9 +32,26 @@ export async function POST(
 
   const { player } = await req.json();
 
-  const session = getSessionFromRequest(req);
-  const effectiveUserId = session?.userId || player?.id;
-  const effectiveHandle = session?.handle || player?.handle || 'Opponent';
+  let effectiveUserId: string | null = null;
+  let effectiveHandle = 'Opponent';
+
+  try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user?.id) {
+      effectiveUserId = user.id;
+      effectiveHandle = user.user_metadata?.handle || user.email?.split('@')[0] || 'Opponent';
+    }
+  } catch (sbErr) {
+    if (typeof sbErr === 'object' && sbErr !== null && 'digest' in sbErr) throw sbErr;
+    // Ignore
+  }
+
+  if (!effectiveUserId) {
+    const session = getSessionFromRequest(req);
+    effectiveUserId = session?.userId || player?.id;
+    effectiveHandle = session?.handle || player?.handle || 'Opponent';
+  }
 
   // Enforce authenticated account requirement (guest accounts rejected)
   if (!effectiveUserId || typeof effectiveUserId !== 'string' || effectiveUserId.startsWith('guest_')) {
@@ -62,8 +81,9 @@ export async function POST(
   // 3. If Black slot is open, claim it
   else if (!room.blackPlayer) {
     role = 'b';
-    room.blackPlayerToken = crypto.randomUUID();
-    playerToken = room.blackPlayerToken;
+    const blackToken = crypto.randomUUID();
+    playerToken = blackToken;
+    room.blackPlayerToken = blackToken;
 
     room.blackPlayer = {
       id: playerId,
@@ -73,9 +93,25 @@ export async function POST(
       connected: true,
     };
     room.gameActive = true;
+
+    try {
+      await prisma.room.update({
+        where: { id: roomId },
+        data: {
+          blackPlayerId: playerId,
+          blackPlayerHandle: effectiveHandle,
+          blackPlayerRating: Number(player?.rating) || 1200,
+          blackPlayerToken: blackToken,
+          status: 'active',
+        },
+      });
+    } catch (dbErr) {
+      console.warn('Database update on room join notice:', dbErr);
+    }
+
     startRoomClock(room);
 
-    broadcastToRoom(room, 'player:joined', {
+    await broadcastRealtimeEvent(roomId, 'player:joined', {
       blackPlayer: room.blackPlayer,
       state: sanitizeRoomState(room),
     });

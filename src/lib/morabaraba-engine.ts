@@ -34,6 +34,8 @@ export interface MorabarabaGameState {
   winner: CowColor | 'draw' | null;
   history: string[];
   lastMove: { from?: PointId; to?: PointId; shot?: PointId } | null;
+  endgameClock?: number; // MSSA 10-move flying draw counter (20 plies without a shot when cow count <= 3)
+  positionHistory?: Record<string, number>; // Threefold repetition counter
 }
 
 // 24 Standard Points
@@ -150,6 +152,8 @@ export class MorabarabaEngine {
   private winner: CowColor | 'draw' | null;
   private history: string[];
   private lastMove: { from?: PointId; to?: PointId; shot?: PointId } | null;
+  private endgameClock: number;
+  private positionHistory: Record<string, number>;
 
   constructor(state?: Partial<MorabarabaGameState>, variant: MorabarabaVariant = 'standard-24') {
     this.variant = state?.variant || variant;
@@ -165,6 +169,13 @@ export class MorabarabaEngine {
     this.winner = state?.winner || null;
     this.history = state?.history ? [...state.history] : [];
     this.lastMove = state?.lastMove ? { ...state.lastMove } : null;
+    this.endgameClock = state?.endgameClock || 0;
+    this.positionHistory = state?.positionHistory ? { ...state.positionHistory } : {};
+
+    if (Object.keys(this.positionHistory).length === 0 && (this.phase === 'moving' || this.phase === 'flying')) {
+      const key = this.getPositionKey();
+      this.positionHistory[key] = 1;
+    }
   }
 
   public static createMovingPhaseQuickStart(variant: MorabarabaVariant = 'standard-24'): MorabarabaEngine {
@@ -232,7 +243,20 @@ export class MorabarabaEngine {
       winner: this.winner,
       history: [...this.history],
       lastMove: this.lastMove ? { ...this.lastMove } : null,
+      endgameClock: this.endgameClock,
+      positionHistory: { ...this.positionHistory },
     };
+  }
+
+  public getEndgameClock(): number {
+    return this.endgameClock;
+  }
+
+  public getPositionKey(): string {
+    const pts = this.getActivePoints();
+    const boardRep = pts.map((p) => `${p}:${this.board[p] || '.'}`).join(',');
+    const shootState = this.shootPending ? `shoot:${this.shootCount}` : 'normal';
+    return `${this.variant}:${this.phase}:${this.turn}:${this.unplacedW},${this.unplacedB}:${shootState}:${boardRep}`;
   }
 
   public getVariant(): MorabarabaVariant {
@@ -383,6 +407,10 @@ export class MorabarabaEngine {
     this.history.push(`${this.turn.toUpperCase()}:${point}`);
     this.lastMove = { to: point };
 
+    // Placement resets repetition history and endgame clocks
+    this.endgameClock = 0;
+    this.positionHistory = {};
+
     if (millsFormed > 0) {
       this.shootPending = true;
       this.shootCount = millsFormed;
@@ -433,6 +461,12 @@ export class MorabarabaEngine {
     this.history.push(`${this.turn.toUpperCase()}:${from}->${to}`);
     this.lastMove = { from, to };
 
+    const cowsW = this.getCowsOnBoard('w');
+    const cowsB = this.getCowsOnBoard('b');
+    if (cowsW <= 3 || cowsB <= 3) {
+      this.endgameClock++;
+    }
+
     if (millsFormed > 0) {
       this.shootPending = true;
       this.shootCount = millsFormed;
@@ -464,6 +498,10 @@ export class MorabarabaEngine {
     } else {
       this.capturedW++;
     }
+
+    // Irreversible cow capture resets repetition tracking and 10-move flying clock
+    this.endgameClock = 0;
+    this.positionHistory = {};
 
     this.history.push(`${this.turn.toUpperCase()}x${point}`);
     if (this.lastMove) {
@@ -497,6 +535,8 @@ export class MorabarabaEngine {
     if (this.phase !== 'placing') {
       const myCows = this.getCowsOnBoard(this.turn);
       this.phase = myCows === 3 ? 'flying' : 'moving';
+      const posKey = this.getPositionKey();
+      this.positionHistory[posKey] = (this.positionHistory[posKey] || 0) + 1;
     }
 
     this.checkWinner();
@@ -506,6 +546,8 @@ export class MorabarabaEngine {
    * Evaluate victory conditions:
    * 1. Opponent reduced to < 3 cows (during moving/flying phase).
    * 2. Opponent has 0 legal moves (immobilized / blocked).
+   * 3. Draw: MSSA 10-move flying endgame rule (20 plies without cow shot).
+   * 4. Draw: Threefold repetition in moving/flying phase.
    */
   public checkWinner(): CowColor | 'draw' | null {
     if (this.winner) return this.winner;
@@ -514,6 +556,7 @@ export class MorabarabaEngine {
       const whiteCows = this.getCowsOnBoard('w');
       const blackCows = this.getCowsOnBoard('b');
 
+      // 1. Piece count < 3 (terminal win condition)
       if (whiteCows < 3) {
         this.winner = 'b';
         return 'b';
@@ -523,12 +566,25 @@ export class MorabarabaEngine {
         return 'w';
       }
 
-      // Check if player on turn has legal moves
+      // 2. Check if player on turn has legal moves (stalemate/blockade win condition)
       const legalMoves = this.getLegalMoves();
       if (legalMoves.length === 0 && !this.shootPending) {
         // Player is immobilized -> opponent wins!
         this.winner = this.turn === 'w' ? 'b' : 'w';
         return this.winner;
+      }
+
+      // 3. Draw Condition 1: MSSA 10-move flying endgame rule (20 plies without a shot when cow count <= 3)
+      if (this.endgameClock >= 20) {
+        this.winner = 'draw';
+        return 'draw';
+      }
+
+      // 4. Draw Condition 2: Threefold repetition in moving or flying phase
+      const currentKey = this.getPositionKey();
+      if ((this.positionHistory[currentKey] || 0) >= 3) {
+        this.winner = 'draw';
+        return 'draw';
       }
     }
 
@@ -698,6 +754,7 @@ export class MorabarabaEngine {
     const winner = engine.checkWinner();
     if (winner === 'b') return 1000 + depth;
     if (winner === 'w') return -1000 - depth;
+    if (winner === 'draw') return 0;
     if (depth <= 0) return this.evaluateState(engine);
 
     const moves = engine.getLegalMoves();

@@ -29,6 +29,8 @@ export interface CheckersGameState {
   winner: Turn | 'draw' | null;
   activeMultiJumpPiece: Position | null; // locked piece during mandatory multi-jump
   mandatoryJumps: boolean; // official Draughts mandatory captures (default: true)
+  halfmoveClock?: number; // 40-move draw rule: plies since last capture or man advancement (80 plies = 40 moves each)
+  positionHistory?: Record<string, number>; // threefold repetition tracking
 }
 
 export class CheckersEngine {
@@ -39,6 +41,8 @@ export class CheckersEngine {
   private history: string[];
   private activeMultiJumpPiece: Position | null;
   private mandatoryJumps: boolean;
+  private halfmoveClock: number;
+  private positionHistory: Record<string, number>;
 
   constructor(state?: Partial<CheckersGameState>, mandatoryJumps = true) {
     this.board = state?.board ? state.board.map((r) => [...r]) : this.getInitialBoard();
@@ -48,6 +52,13 @@ export class CheckersEngine {
     this.history = state?.history || [];
     this.activeMultiJumpPiece = state?.activeMultiJumpPiece || null;
     this.mandatoryJumps = state?.mandatoryJumps !== undefined ? state.mandatoryJumps : mandatoryJumps;
+    this.halfmoveClock = state?.halfmoveClock || 0;
+    this.positionHistory = state?.positionHistory ? { ...state.positionHistory } : {};
+
+    if (Object.keys(this.positionHistory).length === 0) {
+      const key = this.getPositionKey();
+      this.positionHistory[key] = 1;
+    }
   }
 
   public getInitialBoard(): Piece[][] {
@@ -83,7 +94,21 @@ export class CheckersEngine {
       winner: this.checkWinner(),
       activeMultiJumpPiece: this.activeMultiJumpPiece ? { ...this.activeMultiJumpPiece } : null,
       mandatoryJumps: this.mandatoryJumps,
+      halfmoveClock: this.halfmoveClock,
+      positionHistory: { ...this.positionHistory },
     };
+  }
+
+  public getHalfmoveClock(): number {
+    return this.halfmoveClock;
+  }
+
+  public getPositionKey(): string {
+    const boardStr = this.board.map((r) => r.map((c) => c || '.').join('')).join('');
+    const lock = this.activeMultiJumpPiece
+      ? `${this.activeMultiJumpPiece.row},${this.activeMultiJumpPiece.col}`
+      : '-';
+    return `${this.turn}:${lock}:${boardStr}`;
   }
 
   public setMandatoryJumps(val: boolean): void {
@@ -319,9 +344,23 @@ export class CheckersEngine {
       this.activeMultiJumpPiece = null;
     }
 
+    // 40-move draw rule tracking:
+    // Any capture OR any move by an uncrowned man resets the counter to 0.
+    // Consecutive moves by kings without a capture increment the clock by 1 ply.
+    const isMan = p === 'w' || p === 'b';
+    if (isCapture || isMan) {
+      this.halfmoveClock = 0;
+      this.positionHistory = {}; // Irreversible move clears repetition cycles
+    } else {
+      this.halfmoveClock++;
+    }
+
     if (turnSwitched) {
       this.turn = this.turn === 'w' ? 'b' : 'w';
     }
+
+    const posKey = this.getPositionKey();
+    this.positionHistory[posKey] = (this.positionHistory[posKey] || 0) + 1;
 
     return {
       success: true,
@@ -338,7 +377,7 @@ export class CheckersEngine {
   }
 
   public checkWinner(): Turn | 'draw' | null {
-    // Count pieces
+    // 1. Piece wipeout (terminal win takes absolute precedence)
     let whiteCount = 0;
     let blackCount = 0;
 
@@ -353,10 +392,21 @@ export class CheckersEngine {
     if (whiteCount === 0) return 'b';
     if (blackCount === 0) return 'w';
 
-    // Check if player on turn has no legal moves (stalemate = loss in Checkers)
+    // 2. Stalemate: player on turn has no legal moves (loss in American Checkers)
     const moves = this.getLegalMoves();
     if (moves.length === 0) {
       return this.turn === 'w' ? 'b' : 'w';
+    }
+
+    // 3. Official American Checkers 40-move draw rule (WCDF / ACF Law 1.14: 40 moves each = 80 plies without capture or man advancement)
+    if (this.halfmoveClock >= 80) {
+      return 'draw';
+    }
+
+    // 4. Threefold repetition
+    const currentKey = this.getPositionKey();
+    if ((this.positionHistory[currentKey] || 0) >= 3) {
+      return 'draw';
     }
 
     return null;
@@ -425,6 +475,7 @@ export class CheckersEngine {
     const winner = engine.checkWinner();
     if (winner === 'b') return 1000 + depth;
     if (winner === 'w') return -1000 - depth;
+    if (winner === 'draw') return 0;
     if (depth <= 0) return this.evaluateBoard(engine.board);
 
     const moves = engine.getLegalMoves();

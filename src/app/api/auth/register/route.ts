@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import bcrypt from 'bcryptjs';
 import { checkRateLimit, getClientIp } from '@/lib/rate-limiter';
-import { createSessionToken } from '@/lib/auth-token';
+import { createClient } from '@/lib/supabase/server';
 
 const HANDLE_REGEX = /^[a-zA-Z0-9_]{3,20}$/;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -10,7 +10,7 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export async function POST(req: Request) {
   try {
     const ip = getClientIp(req);
-    const rateCheck = checkRateLimit(`register_${ip}`, 3, 60);
+    const rateCheck = checkRateLimit(`register_${ip}`, 5, 60);
 
     if (!rateCheck.allowed) {
       return NextResponse.json(
@@ -37,7 +37,6 @@ export async function POST(req: Request) {
     const cleanEmail = email.trim().toLowerCase();
     const initialXp = Math.max(0, Math.min(500_000, Number(guestXp) || 0));
 
-    // Input sanitization & pattern validation
     if (!HANDLE_REGEX.test(cleanHandle)) {
       return NextResponse.json(
         { error: 'Handle must be 3-20 characters long and contain only letters, numbers, and underscores.' },
@@ -59,7 +58,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Check existing
+    // Check existing in database
     const existing = await prisma.user.findFirst({
       where: {
         OR: [{ handle: cleanHandle }, { email: cleanEmail }],
@@ -73,47 +72,43 @@ export async function POST(req: Request) {
       );
     }
 
-    // Provision user into Neon Managed Better Auth (if configured)
-    const neonAuthBase = process.env.NEON_AUTH_BASE_URL;
-    let neonUserId: string | null = null;
-    let neonSetCookie: string | null = null;
+    let supabaseUserId: string | null = null;
 
-    if (neonAuthBase) {
-      try {
-        const origin = req.headers.get('origin') || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-        const neonRes = await fetch(`${neonAuthBase}/sign-up/email`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Origin': origin,
+    try {
+      const supabase = await createClient();
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password,
+        options: {
+          data: {
+            handle: cleanHandle,
+            displayName: cleanHandle,
           },
-          body: JSON.stringify({
-            email: cleanEmail,
-            password,
-            name: cleanHandle,
-          }),
-        });
+        },
+      });
 
-        const neonData = await neonRes.json().catch(() => null);
-        if (neonRes.ok && neonData?.user?.id) {
-          neonUserId = neonData.user.id;
-          neonSetCookie = neonRes.headers.get('set-cookie');
-        } else if (!neonRes.ok && neonData?.code === 'USER_ALREADY_EXISTS') {
+      if (authError) {
+        if (authError.message.toLowerCase().includes('already registered')) {
           return NextResponse.json(
-            { error: 'An account with this email already exists in Neon Auth.' },
+            { error: 'An account with this email already exists in Supabase Auth.' },
             { status: 409 }
           );
         }
-      } catch (neonErr) {
-        console.warn('Neon Better Auth provision notice:', neonErr);
+        console.warn('Supabase Auth signUp notice:', authError.message);
+      } else if (authData?.user?.id) {
+        supabaseUserId = authData.user.id;
       }
+    } catch (supabaseErr) {
+      if (typeof supabaseErr === 'object' && supabaseErr !== null && 'digest' in supabaseErr) throw supabaseErr;
+      console.warn('Supabase Auth client notice:', supabaseErr);
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
+    const userId = supabaseUserId || crypto.randomUUID();
 
     const user = await prisma.user.create({
       data: {
-        ...(neonUserId ? { id: neonUserId } : {}),
+        id: userId,
         handle: cleanHandle,
         email: cleanEmail,
         passwordHash,
@@ -137,7 +132,7 @@ export async function POST(req: Request) {
       },
     });
 
-    // Seamlessly re-assign any recorded matches played during guest session
+    // Re-assign any matches played during guest session
     if (guestId && typeof guestId === 'string' && guestId.startsWith('guest_')) {
       try {
         await prisma.$transaction([
@@ -159,23 +154,7 @@ export async function POST(req: Request) {
       }
     }
 
-    const token = createSessionToken({
-      id: user.id,
-      handle: user.handle,
-      email: user.email,
-    });
-
-    const isProd = process.env.NODE_ENV === 'production';
-    const cookieHeader = `obscura_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${
-      isProd ? '; Secure' : ''
-    }`;
-
-    const res = NextResponse.json({ token, user, neonAuth: Boolean(neonUserId) }, { status: 201 });
-    res.headers.set('Set-Cookie', cookieHeader);
-    if (neonSetCookie) {
-      res.headers.append('Set-Cookie', neonSetCookie);
-    }
-    return res;
+    return NextResponse.json({ user, supabaseAuth: Boolean(supabaseUserId) }, { status: 201 });
   } catch (error) {
     console.error('Registration error:', error);
     return NextResponse.json(

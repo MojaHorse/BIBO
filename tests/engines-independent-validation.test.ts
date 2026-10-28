@@ -433,8 +433,8 @@ test('Chess: Insufficient material draw detection', () => {
 });
 
 test('Chess: Minimax finds Mate-in-1 accurately for White and Black', () => {
-  // White to move: Scholar's Mate position (Qxf7#)
-  const chessWhite = new Chess('r1bqkb1r/pppp1ppp/2n5/4p3/2B1n3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 4');
+  // White to move: Legal Scholar's Mate position (1. e4 e5 2. Bc4 Nc6 3. Qf3 d6 -> 4. Qxf7#)
+  const chessWhite = new Chess('r1bqkbnr/ppp2ppp/2np4/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 4');
   const bestWhite = findBestMove(chessWhite, 'medium');
   assert.ok(bestWhite);
   assert.equal(bestWhite.from, 'f3');

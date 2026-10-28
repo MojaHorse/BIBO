@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { GameId, PlayerColor } from './types';
 import { getPlayerSession } from '../session';
 import { ChatMessage } from '../room-manager';
+import { createClient as createBrowserSupabaseClient } from '../supabase/client';
 
 export interface UseMultiplayerRoomOptions {
   roomId: string | null;
@@ -17,6 +18,7 @@ export interface UseMultiplayerRoomOptions {
     originPlayerId?: string | null;
     commandId?: string | null;
     isEcho?: boolean;
+    sequence?: number;
   }) => void;
   onGameOver: (gameOver: { winner: PlayerColor | 'draw' | null; reason: string }) => void;
 }
@@ -48,6 +50,9 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
   const [rematchOfferPendingFrom, setRematchOfferPendingFrom] = useState<PlayerColor | null>(null);
   const [drawOfferStatus, setDrawOfferStatus] = useState<string | null>(null);
 
+  // Monotonically increasing sequence tracker to detect gaps
+  const lastSequenceRef = useRef<number>(0);
+
   // Keep latest callbacks in refs to avoid stale closures in event listeners
   const callbacksRef = useRef({ onStateSync, onClockSync, onMoveMade, onGameOver });
   useEffect(() => {
@@ -57,10 +62,11 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
   // Keep track of locally-initiated command IDs to identify echoes
   const pendingCommandIdsRef = useRef<Set<string>>(new Set());
 
-  // Connect to Multiplayer Room via SSE
+  // Connect to Multiplayer Room via Supabase Realtime Channels (with SSE fallback)
   useEffect(() => {
     if (!roomId) {
       pendingCommandIdsRef.current.clear();
+      lastSequenceRef.current = 0;
       setMyRole(null);
       setMyPlayerToken(null);
       setOpponentInfo(null);
@@ -75,6 +81,23 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
     const session = getPlayerSession();
     let eventSource: EventSource | null = null;
     let isSubscribed = true;
+
+    // Fetch authoritative state from database
+    const syncAuthoritativeState = async () => {
+      try {
+        const res = await fetch(`/api/rooms/${roomId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.state && isSubscribed) {
+          if (data.state.moveSequence) {
+            lastSequenceRef.current = data.state.moveSequence;
+          }
+          callbacksRef.current.onStateSync(data.state);
+        }
+      } catch {
+        // Ignore
+      }
+    };
 
     const joinRoom = async () => {
       try {
@@ -101,6 +124,7 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
 
         if (data.state) {
           const s = data.state;
+          if (s.moveSequence) lastSequenceRef.current = s.moveSequence;
           callbacksRef.current.onStateSync(s);
 
           if (s.chatMessages && Array.isArray(s.chatMessages)) {
@@ -128,7 +152,142 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
 
     joinRoom();
 
-    // Open Server-Sent Events stream with identity query
+    // 1. Subscribe to Supabase Realtime Channel
+    const supabase = createBrowserSupabaseClient();
+    const channel = supabase.channel(`room:${roomId}`, {
+      config: { broadcast: { self: false } },
+    });
+
+    const handleMoveMade = (payload: any) => {
+      if (!isSubscribed) return;
+      const curSession = getPlayerSession();
+      const hasPendingId = Boolean(payload.commandId && pendingCommandIdsRef.current.has(payload.commandId));
+      const isFromMe = Boolean(payload.originPlayerId && payload.originPlayerId === curSession.id);
+      const isEcho = hasPendingId || isFromMe;
+
+      if (payload.commandId) {
+        pendingCommandIdsRef.current.delete(payload.commandId);
+      }
+
+      // Check for sequence gap (missed event recovery)
+      if (payload.sequence !== undefined) {
+        if (lastSequenceRef.current > 0 && payload.sequence > lastSequenceRef.current + 1) {
+          syncAuthoritativeState();
+        }
+        lastSequenceRef.current = Math.max(lastSequenceRef.current, payload.sequence);
+      }
+
+      callbacksRef.current.onMoveMade({
+        ...payload,
+        isEcho,
+      });
+    };
+
+    const handleClockSync = (payload: any) => {
+      if (!isSubscribed) return;
+      callbacksRef.current.onClockSync(payload.whiteTime, payload.blackTime, payload.activeTurn);
+    };
+
+    const handlePlayerJoined = (payload: any) => {
+      if (!isSubscribed) return;
+      const player = payload.blackPlayer || payload.player;
+      if (player) {
+        setOpponentInfo({ handle: player.handle, rating: player.rating, avatar: player.avatar });
+        setIsWaitingForOpponent(false);
+        setIsOpponentConnected(true);
+        setOpponentDisconnectedAt(null);
+      }
+      if (payload.state) {
+        callbacksRef.current.onStateSync(payload.state);
+      }
+    };
+
+    const handlePlayerDisconnected = (payload: any) => {
+      if (!isSubscribed) return;
+      if (payload.role !== myRole) {
+        setIsOpponentConnected(false);
+        setOpponentDisconnectedAt(payload.at || Date.now());
+      }
+    };
+
+    const handlePlayerReconnected = (payload: any) => {
+      if (!isSubscribed) return;
+      if (payload.role !== myRole) {
+        setIsOpponentConnected(true);
+        setOpponentDisconnectedAt(null);
+      }
+    };
+
+    const handleGameOver = (payload: any) => {
+      if (!isSubscribed) return;
+      if (payload.gameOver) {
+        setDrawOfferPendingFrom(null);
+        callbacksRef.current.onGameOver(payload.gameOver);
+      }
+    };
+
+    const handleChatMessage = (message: ChatMessage) => {
+      if (!isSubscribed) return;
+      setChatMessages((prev) => [...prev, message]);
+      if (message.emoji) {
+        setIncomingReaction({
+          emoji: message.emoji,
+          senderHandle: message.senderHandle,
+          id: message.id,
+        });
+        setTimeout(() => {
+          setIncomingReaction((curr) => (curr?.id === message.id ? null : curr));
+        }, 3200);
+      }
+    };
+
+    const handleDrawOffered = (payload: any) => {
+      if (!isSubscribed) return;
+      setDrawOfferPendingFrom(payload.by);
+    };
+
+    const handleDrawDeclined = (payload: any) => {
+      if (!isSubscribed) return;
+      setDrawOfferPendingFrom(null);
+      setDrawOfferStatus(`${payload.by === 'w' ? 'White' : 'Black'} declined the draw offer`);
+      setTimeout(() => setDrawOfferStatus(null), 4000);
+    };
+
+    const handleRematchOffered = (payload: any) => {
+      if (!isSubscribed) return;
+      setRematchOfferPendingFrom(payload.by);
+    };
+
+    const handleRematchAccepted = (payload: any) => {
+      if (!isSubscribed) return;
+      setRematchOfferPendingFrom(null);
+      setDrawOfferPendingFrom(null);
+      if (payload.state) {
+        callbacksRef.current.onStateSync(payload.state);
+        setMyRole((prev) => (prev === 'w' ? 'b' : prev === 'b' ? 'w' : prev));
+      }
+    };
+
+    // Register Realtime channel broadcasts
+    channel
+      .on('broadcast', { event: 'move:made' }, ({ payload }) => handleMoveMade(payload))
+      .on('broadcast', { event: 'clock:sync' }, ({ payload }) => handleClockSync(payload))
+      .on('broadcast', { event: 'player:joined' }, ({ payload }) => handlePlayerJoined(payload))
+      .on('broadcast', { event: 'player:disconnected' }, ({ payload }) => handlePlayerDisconnected(payload))
+      .on('broadcast', { event: 'player:reconnected' }, ({ payload }) => handlePlayerReconnected(payload))
+      .on('broadcast', { event: 'game:over' }, ({ payload }) => handleGameOver(payload))
+      .on('broadcast', { event: 'chat:message' }, ({ payload }) => handleChatMessage(payload))
+      .on('broadcast', { event: 'draw:offered' }, ({ payload }) => handleDrawOffered(payload))
+      .on('broadcast', { event: 'draw:declined' }, ({ payload }) => handleDrawDeclined(payload))
+      .on('broadcast', { event: 'rematch:offered' }, ({ payload }) => handleRematchOffered(payload))
+      .on('broadcast', { event: 'rematch:accepted' }, ({ payload }) => handleRematchAccepted(payload))
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED' && isSubscribed) {
+          setIsConnected(true);
+        }
+      });
+
+    // 2. Open Server-Sent Events stream as resilient fallback
     eventSource = new EventSource(`/api/rooms/${roomId}/stream?playerId=${session.id}`);
 
     eventSource.onopen = () => {
@@ -136,167 +295,85 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
     };
 
     eventSource.onerror = () => {
-      if (isSubscribed) setIsConnected(false);
+      // SSE connection error handled gracefully
     };
 
-    eventSource.addEventListener('clock:sync', (event) => {
+    eventSource.addEventListener('clock:sync', (e) => {
       try {
-        const payload = JSON.parse(event.data);
-        callbacksRef.current.onClockSync(payload.whiteTime, payload.blackTime, payload.activeTurn);
-      } catch {
-        // ignore
-      }
+        handleClockSync(JSON.parse(e.data));
+      } catch {}
     });
 
-    eventSource.addEventListener('move:made', (event) => {
+    eventSource.addEventListener('move:made', (e) => {
       try {
-        const payload = JSON.parse(event.data);
-        const session = getPlayerSession();
-        const hasPendingId = Boolean(payload.commandId && pendingCommandIdsRef.current.has(payload.commandId));
-        const isFromMe = Boolean(payload.originPlayerId && payload.originPlayerId === session.id);
-        const isEcho = hasPendingId || isFromMe;
-
-        if (payload.commandId) {
-          pendingCommandIdsRef.current.delete(payload.commandId);
-        }
-
-        callbacksRef.current.onMoveMade({
-          ...payload,
-          isEcho,
-        });
-      } catch {
-        // ignore
-      }
+        handleMoveMade(JSON.parse(e.data));
+      } catch {}
     });
 
-    eventSource.addEventListener('player:joined', (event) => {
+    eventSource.addEventListener('player:joined', (e) => {
       try {
-        const payload = JSON.parse(event.data);
-        const player = payload.blackPlayer || payload.player;
-        if (player) {
-          setOpponentInfo({ handle: player.handle, rating: player.rating, avatar: player.avatar });
-          setIsWaitingForOpponent(false);
-          setIsOpponentConnected(true);
-          setOpponentDisconnectedAt(null);
-        }
-        if (payload.state) {
-          callbacksRef.current.onStateSync(payload.state);
-        }
-      } catch {
-        // ignore
-      }
+        handlePlayerJoined(JSON.parse(e.data));
+      } catch {}
     });
 
-    eventSource.addEventListener('player:disconnected', (event) => {
+    eventSource.addEventListener('player:disconnected', (e) => {
       try {
-        const payload = JSON.parse(event.data);
-        if (payload.role !== myRole) {
-          setIsOpponentConnected(false);
-          setOpponentDisconnectedAt(payload.at || Date.now());
-        }
-      } catch {
-        // ignore
-      }
+        handlePlayerDisconnected(JSON.parse(e.data));
+      } catch {}
     });
 
-    eventSource.addEventListener('player:reconnected', (event) => {
+    eventSource.addEventListener('player:reconnected', (e) => {
       try {
-        const payload = JSON.parse(event.data);
-        if (payload.role !== myRole) {
-          setIsOpponentConnected(true);
-          setOpponentDisconnectedAt(null);
-        }
-      } catch {
-        // ignore
-      }
+        handlePlayerReconnected(JSON.parse(e.data));
+      } catch {}
     });
 
-    eventSource.addEventListener('game:over', (event) => {
+    eventSource.addEventListener('game:over', (e) => {
       try {
-        const payload = JSON.parse(event.data);
-        if (payload.gameOver) {
-          setDrawOfferPendingFrom(null);
-          callbacksRef.current.onGameOver(payload.gameOver);
-        }
-      } catch {
-        // ignore
-      }
+        handleGameOver(JSON.parse(e.data));
+      } catch {}
     });
 
-    eventSource.addEventListener('chat:message', (event) => {
+    eventSource.addEventListener('chat:message', (e) => {
       try {
-        const message: ChatMessage = JSON.parse(event.data);
-        setChatMessages((prev) => [...prev, message]);
-
-        // If it's a reaction emoji from the opponent, trigger floating reaction animation
-        if (message.emoji) {
-          setIncomingReaction({
-            emoji: message.emoji,
-            senderHandle: message.senderHandle,
-            id: message.id,
-          });
-          setTimeout(() => {
-            setIncomingReaction((curr) => (curr?.id === message.id ? null : curr));
-          }, 3200);
-        }
-      } catch {
-        // ignore
-      }
+        handleChatMessage(JSON.parse(e.data));
+      } catch {}
     });
 
-    eventSource.addEventListener('draw:offered', (event) => {
+    eventSource.addEventListener('draw:offered', (e) => {
       try {
-        const payload = JSON.parse(event.data);
-        setDrawOfferPendingFrom(payload.by);
-      } catch {
-        // ignore
-      }
+        handleDrawOffered(JSON.parse(e.data));
+      } catch {}
     });
 
-    eventSource.addEventListener('draw:declined', (event) => {
+    eventSource.addEventListener('draw:declined', (e) => {
       try {
-        const payload = JSON.parse(event.data);
-        setDrawOfferPendingFrom(null);
-        setDrawOfferStatus(`${payload.by === 'w' ? 'White' : 'Black'} declined the draw offer`);
-        setTimeout(() => setDrawOfferStatus(null), 4000);
-      } catch {
-        // ignore
-      }
+        handleDrawDeclined(JSON.parse(e.data));
+      } catch {}
     });
 
-    eventSource.addEventListener('rematch:offered', (event) => {
+    eventSource.addEventListener('rematch:offered', (e) => {
       try {
-        const payload = JSON.parse(event.data);
-        setRematchOfferPendingFrom(payload.by);
-      } catch {
-        // ignore
-      }
+        handleRematchOffered(JSON.parse(e.data));
+      } catch {}
     });
 
-    eventSource.addEventListener('rematch:accepted', (event) => {
+    eventSource.addEventListener('rematch:accepted', (e) => {
       try {
-        const payload = JSON.parse(event.data);
-        setRematchOfferPendingFrom(null);
-        setDrawOfferPendingFrom(null);
-        if (payload.state) {
-          callbacksRef.current.onStateSync(payload.state);
-          // Invert local role because rematch swaps colors
-          setMyRole((prev) => (prev === 'w' ? 'b' : prev === 'b' ? 'w' : prev));
-        }
-      } catch {
-        // ignore
-      }
+        handleRematchAccepted(JSON.parse(e.data));
+      } catch {}
     });
 
     return () => {
       isSubscribed = false;
+      channel.unsubscribe();
       if (eventSource) {
         eventSource.close();
       }
     };
   }, [roomId, gameId]);
 
-  // Transmit move to server room
+  // Transmit move to server room with commandId and expected sequence
   const sendMove = useCallback(
     async (move: any) => {
       if (!roomId) return false;
@@ -317,6 +394,7 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
             playerId: session.id,
             playerToken: myPlayerToken,
             commandId,
+            expectedSequence: lastSequenceRef.current,
           }),
         });
 
@@ -325,6 +403,11 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
           const errData = await res.json().catch(() => ({}));
           console.warn('Move rejected by room server:', errData.error);
           return false;
+        }
+
+        const data = await res.json();
+        if (data.state?.moveSequence) {
+          lastSequenceRef.current = data.state.moveSequence;
         }
 
         return true;

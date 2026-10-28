@@ -86,3 +86,15 @@ test('Proxy: valid authenticated user session is passed through to arena', () =>
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('location'), null);
 });
+
+test('Proxy: verified Supabase Auth session cookie is passed through to arena', () => {
+  const req = new NextRequest('http://localhost:3000/play/chess?mode=bot', {
+    headers: {
+      cookie: 'sb-bibo-auth-token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy.signature',
+    },
+  });
+  const res = proxy(req);
+
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('location'), null);
+});

@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { activeRooms, offerRematch, acceptRematch, sanitizeRoomState, authenticateRoomPlayer } from '@/lib/room-manager';
+import { getDurableRoom, offerRematch, acceptRematch, sanitizeRoomState, authenticateRoomPlayer } from '@/lib/room-manager';
 
 export async function POST(
   req: Request,
   context: { params: Promise<{ roomId: string }> }
 ) {
   const { roomId } = await context.params;
-  const room = activeRooms.get(roomId);
+  const room = await getDurableRoom(roomId);
   if (!room) {
     return NextResponse.json({ error: 'Room not found' }, { status: 404 });
   }
@@ -21,12 +21,12 @@ export async function POST(
     }
 
     if (action === 'offer') {
-      const ok = offerRematch(room, role);
+      const ok = await offerRematch(room, role);
       return NextResponse.json({ success: ok, pendingRematchOffer: room.pendingRematchOffer });
     }
 
     if (action === 'accept') {
-      const ok = acceptRematch(room, role);
+      const ok = await acceptRematch(room, role);
       return NextResponse.json({ success: ok, state: sanitizeRoomState(room) });
     }
 

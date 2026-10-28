@@ -5,30 +5,31 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
-  directUrl = env("DATABASE_URL_UNPOOLED")
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
-  id           String   @id @default(uuid())
-  handle       String   @unique
-  email        String   @unique
-  passwordHash String
-  displayName  String?
-  avatar       String?
-  playStyle    String?  @default("Tactical")
-  onboarded    Boolean  @default(false)
-  isPro        Boolean  @default(false)
-  stripeCustId String?
+  id               String   @id @default(uuid())
+  handle           String   @unique
+  email            String   @unique
+  passwordHash     String?
+  displayName      String?
+  avatar           String?
+  playStyle        String?  @default("Tactical")
+  onboarded        Boolean  @default(false)
+  isPro            Boolean  @default(false)
+  stripeCustId     String?
   bulletRating     Int      @default(1200)
   blitzRating      Int      @default(1200)
   rapidRating      Int      @default(1200)
   checkersRating   Int      @default(1200)
   morabarabaRating Int      @default(1200)
   xp               Int      @default(0)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @default(now()) @updatedAt
-  blackMatches Match[]  @relation("BlackPlayer")
-  whiteMatches Match[]  @relation("WhitePlayer")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now()) @updatedAt
+
+  blackMatches     Match[]  @relation("BlackPlayer")
+  whiteMatches     Match[]  @relation("WhitePlayer")
 
   @@index([blitzRating])
   @@index([rapidRating])
@@ -40,6 +41,7 @@ model User {
 
 model Match {
   id          String   @id @default(uuid())
+  roomId      String?  @unique
   gameId      String   @default("chess")
   variant     String?  @default("standard")
   whiteId     String
@@ -52,6 +54,7 @@ model Match {
   rated       Boolean  @default(true)
   ratingDelta Int      @default(0)
   createdAt   DateTime @default(now())
+
   black       User     @relation("BlackPlayer", fields: [blackId], references: [id])
   white       User     @relation("WhitePlayer", fields: [whiteId], references: [id])
 
@@ -60,4 +63,58 @@ model Match {
   @@index([createdAt])
   @@index([gameId])
   @@index([whiteId, blackId])
+}
+
+model Room {
+  id                  String     @id
+  gameId              String     @default("chess")
+  variant             String     @default("standard")
+  timeControlMinutes  Int        @default(5)
+  status              String     @default("waiting") // waiting | active | completed | abandoned
+  creatorId           String
+  whitePlayerId       String?
+  blackPlayerId       String?
+  whitePlayerToken    String?
+  blackPlayerToken    String?
+  whitePlayerHandle   String?
+  blackPlayerHandle   String?
+  whitePlayerRating   Int?       @default(1200)
+  blackPlayerRating   Int?       @default(1200)
+  whiteTimeRemaining  Int
+  blackTimeRemaining  Int
+  lastMoveTimestamp   BigInt
+  currentTurn         String     @default("w")
+  moveSequence        Int        @default(0)
+  currentState        Json
+  lastMove            Json?
+  history             String[]   @default([])
+  pendingDrawOffer    String?
+  pendingRematchOffer String?
+  winner              String?
+  finishReason        String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  moves               RoomMove[]
+
+  @@index([status])
+  @@index([creatorId])
+  @@index([updatedAt])
+}
+
+model RoomMove {
+  id            String   @id @default(uuid())
+  roomId        String
+  room          Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sequence      Int
+  commandId     String
+  playerId      String
+  playerRole    String   // 'w' | 'b'
+  moveData      Json
+  resultingTurn String
+  createdAt     DateTime @default(now())
+
+  @@unique([roomId, sequence])
+  @@unique([roomId, commandId])
+  @@index([roomId, sequence])
 }

@@ -1,11 +1,13 @@
-import { Chess, Square, Color } from 'chess.js';
+import { Chess } from 'chess.js';
 import crypto from 'crypto';
+import { Prisma } from '@prisma/client';
 import { GameId, IGameEngine, PlayerColor } from './games/types';
 import { createGameEngine } from './games/factory';
 import { prisma } from './prisma';
 import { calculateElo } from './elo';
 import { calculateMatchXp } from './progression';
 import { getSessionFromRequest } from './auth-token';
+import { createAdminClient } from './supabase/admin';
 
 export interface RoomPlayer {
   id: string;
@@ -31,7 +33,7 @@ export interface RoomState {
   gameId: GameId;
   variant: string;
   engine: IGameEngine<any>;
-  chess?: Chess; // for backwards compatibility with any direct chess readers
+  chess?: Chess;
   timeControlMinutes: number;
   whiteTime: number; // in seconds
   blackTime: number; // in seconds
@@ -39,6 +41,7 @@ export interface RoomState {
   gameActive: boolean;
   history: string[];
   lastMove: any;
+  moveSequence?: number;
   whitePlayer: RoomPlayer | null;
   blackPlayer: RoomPlayer | null;
   whitePlayerToken?: string;
@@ -57,6 +60,34 @@ const globalForRooms = global as unknown as { rooms: Map<string, RoomState> };
 export const activeRooms = globalForRooms.rooms || new Map<string, RoomState>();
 if (process.env.NODE_ENV !== 'production') globalForRooms.rooms = activeRooms;
 
+// Publish event to Supabase Realtime channel and local listeners
+export async function broadcastRealtimeEvent(roomId: string, event: string, payload: unknown) {
+  // 1. Supabase Realtime Channel broadcast
+  try {
+    const admin = createAdminClient();
+    const channel = admin.channel(`room:${roomId}`);
+    await channel.send({
+      type: 'broadcast',
+      event,
+      payload,
+    });
+  } catch {
+    // In local dev/test or offline mode, Realtime broadcast failure does not interrupt logic
+  }
+
+  // 2. In-memory listeners (for active SSE streams or local tests)
+  const room = activeRooms.get(roomId);
+  if (room) {
+    for (const listener of room.listeners) {
+      try {
+        listener(event, payload);
+      } catch {
+        // ignore closed stream
+      }
+    }
+  }
+}
+
 export function broadcastToRoom(room: RoomState, event: string, data: unknown) {
   for (const listener of room.listeners) {
     try {
@@ -65,6 +96,41 @@ export function broadcastToRoom(room: RoomState, event: string, data: unknown) {
       // ignore closed stream
     }
   }
+  // Also forward to Realtime
+  broadcastRealtimeEvent(room.id, event, data);
+}
+
+// Compute deterministic authoritative time from database room record
+export function calculateAuthoritativeClocks(roomRecord: {
+  status: string;
+  currentTurn: string;
+  lastMoveTimestamp: bigint | number;
+  whiteTimeRemaining: number;
+  blackTimeRemaining: number;
+}) {
+  const now = Date.now();
+  if (roomRecord.status !== 'active') {
+    return {
+      whiteTime: roomRecord.whiteTimeRemaining,
+      blackTime: roomRecord.blackTimeRemaining,
+      timedOutPlayer: null as PlayerColor | null,
+    };
+  }
+
+  const elapsed = Math.max(0, Math.floor((now - Number(roomRecord.lastMoveTimestamp)) / 1000));
+  let whiteTime = roomRecord.whiteTimeRemaining;
+  let blackTime = roomRecord.blackTimeRemaining;
+  let timedOutPlayer: PlayerColor | null = null;
+
+  if (roomRecord.currentTurn === 'w') {
+    whiteTime = Math.max(0, whiteTime - elapsed);
+    if (whiteTime <= 0) timedOutPlayer = 'w';
+  } else {
+    blackTime = Math.max(0, blackTime - elapsed);
+    if (blackTime <= 0) timedOutPlayer = 'b';
+  }
+
+  return { whiteTime, blackTime, timedOutPlayer };
 }
 
 export async function finalizeRoomMatch(
@@ -174,9 +240,12 @@ export async function finalizeRoomMatch(
     const pgn = room.engine.serialize() || room.history.join(' ');
     const fen = room.engine.getFenOrSnapshot();
 
+    // Idempotent match creation with roomId unique constraint
     updates.push(
-      prisma.match.create({
-        data: {
+      prisma.match.upsert({
+        where: { roomId: room.id },
+        update: {},
+        create: {
           gameId: room.gameId,
           variant: room.variant,
           whiteId: wUser.id,
@@ -188,6 +257,7 @@ export async function finalizeRoomMatch(
           finalFen: fen,
           rated: !isBotOrGuest,
           ratingDelta,
+          roomId: room.id,
         },
       })
     );
@@ -229,6 +299,7 @@ export function startRoomClock(room: RoomState) {
   }, 1000);
 }
 
+// In-memory room creation (preserves compatibility with test harness)
 export function createRoom(
   timeControlMinutes: number,
   creator: { id: string; handle: string; rating: number },
@@ -247,9 +318,10 @@ export function createRoom(
     whiteTime: timeControlMinutes * 60,
     blackTime: timeControlMinutes * 60,
     lastMoveTimestamp: Date.now(),
-    gameActive: false, // Waits until Black joins
+    gameActive: false,
     history: [],
     lastMove: null,
+    moveSequence: 0,
     whitePlayer: {
       id: creator.id,
       handle: creator.handle,
@@ -267,13 +339,292 @@ export function createRoom(
     listeners: new Set(),
   };
 
-  // Backwards compatibility for chess callers
   if (gameId === 'chess') {
     room.chess = (engine as any).getInternalEngine();
   }
 
   activeRooms.set(roomId, room);
   return room;
+}
+
+// Durable room creation with Supabase PostgreSQL persistence
+export async function createDurableRoom(
+  timeControlMinutes: number,
+  creator: { id: string; handle: string; rating: number },
+  gameId: GameId = 'chess',
+  variant?: string
+): Promise<RoomState> {
+  const room = createRoom(timeControlMinutes, creator, gameId, variant);
+
+  try {
+    await prisma.room.create({
+      data: {
+        id: room.id,
+        gameId: room.gameId,
+        variant: room.variant,
+        timeControlMinutes: room.timeControlMinutes,
+        status: 'waiting',
+        creatorId: creator.id,
+        whitePlayerId: creator.id,
+        whitePlayerHandle: creator.handle,
+        whitePlayerRating: creator.rating,
+        whitePlayerToken: room.whitePlayerToken,
+        whiteTimeRemaining: room.whiteTime,
+        blackTimeRemaining: room.blackTime,
+        lastMoveTimestamp: BigInt(room.lastMoveTimestamp),
+        currentTurn: 'w',
+        moveSequence: 0,
+        currentState: room.engine.getState() as any,
+        history: [],
+      },
+    });
+  } catch (dbErr) {
+    console.warn('Durable room creation notice (using in-memory):', dbErr);
+  }
+
+  return room;
+}
+
+// Hydrate game engine from snapshot or serialized state
+export function hydrateEngine(gameId: GameId, variant?: string, currentState?: any): IGameEngine {
+  let snapshotStr: string | undefined;
+  if (currentState) {
+    if (typeof currentState === 'string') {
+      snapshotStr = currentState;
+    } else if (gameId === 'chess' && currentState.fen) {
+      snapshotStr = currentState.fen;
+    } else {
+      snapshotStr = JSON.stringify(currentState);
+    }
+  }
+  return createGameEngine(gameId, variant, snapshotStr);
+}
+
+// Durable room lookup: reads from PostgreSQL and caches in memory
+export async function getDurableRoom(roomId: string): Promise<RoomState | null> {
+  const inMemory = activeRooms.get(roomId);
+
+  try {
+    const dbRoom = await prisma.room.findUnique({
+      where: { id: roomId },
+    }).catch(() => null);
+
+    if (dbRoom) {
+      const clocks = calculateAuthoritativeClocks(dbRoom);
+      const engine = hydrateEngine(dbRoom.gameId as GameId, dbRoom.variant, dbRoom.currentState);
+
+      let gameOver: { winner: PlayerColor | 'draw' | null; reason: string } | null = null;
+      if (dbRoom.status === 'completed' && dbRoom.winner) {
+        gameOver = {
+          winner: dbRoom.winner as any,
+          reason: dbRoom.finishReason || 'Match completed',
+        };
+      } else if (clocks.timedOutPlayer) {
+        const winnerRole: PlayerColor = clocks.timedOutPlayer === 'w' ? 'b' : 'w';
+        gameOver = {
+          winner: winnerRole,
+          reason: `${clocks.timedOutPlayer === 'w' ? 'White' : 'Black'} ran out of time`,
+        };
+      }
+
+      const whitePlayer: RoomPlayer | null = dbRoom.whitePlayerId
+        ? {
+            id: dbRoom.whitePlayerId,
+            handle: dbRoom.whitePlayerHandle || 'White',
+            rating: dbRoom.whitePlayerRating || 1200,
+            color: 'w',
+            connected: true,
+          }
+        : null;
+
+      const blackPlayer: RoomPlayer | null = dbRoom.blackPlayerId
+        ? {
+            id: dbRoom.blackPlayerId,
+            handle: dbRoom.blackPlayerHandle || 'Black',
+            rating: dbRoom.blackPlayerRating || 1200,
+            color: 'b',
+            connected: true,
+          }
+        : null;
+
+      const reconstructed: RoomState = {
+        id: dbRoom.id,
+        gameId: dbRoom.gameId as GameId,
+        variant: dbRoom.variant,
+        engine,
+        timeControlMinutes: dbRoom.timeControlMinutes,
+        whiteTime: clocks.whiteTime,
+        blackTime: clocks.blackTime,
+        lastMoveTimestamp: Number(dbRoom.lastMoveTimestamp),
+        gameActive: dbRoom.status === 'active' && !gameOver,
+        history: dbRoom.history || [],
+        lastMove: dbRoom.lastMove || null,
+        moveSequence: dbRoom.moveSequence,
+        whitePlayer,
+        blackPlayer,
+        whitePlayerToken: dbRoom.whitePlayerToken || undefined,
+        blackPlayerToken: dbRoom.blackPlayerToken || undefined,
+        gameOver,
+        chatMessages: inMemory?.chatMessages || [],
+        pendingDrawOffer: (dbRoom.pendingDrawOffer as PlayerColor) || null,
+        pendingRematchOffer: (dbRoom.pendingRematchOffer as PlayerColor) || null,
+        listeners: inMemory?.listeners || new Set(),
+      };
+
+      activeRooms.set(roomId, reconstructed);
+      return reconstructed;
+    }
+  } catch (err) {
+    console.warn('Database room fetch notice, falling back to memory:', err);
+  }
+
+  return inMemory || null;
+}
+
+// Durable room move submission with unique command ID idempotency & row-locking transaction
+export async function submitDurableMove(params: {
+  roomId: string;
+  playerId: string;
+  playerToken?: string;
+  moveInput: any;
+  commandId?: string;
+  expectedSequence?: number;
+}): Promise<{
+  success: boolean;
+  state?: any;
+  idempotent?: boolean;
+  error?: string;
+}> {
+  const { roomId, playerId, playerToken, moveInput, commandId, expectedSequence } = params;
+
+  // 1. Idempotency Check: if this command ID has already been committed, return cached state
+  if (commandId) {
+    try {
+      const existingMove = await prisma.roomMove.findUnique({
+        where: { roomId_commandId: { roomId, commandId } },
+      }).catch(() => null);
+
+      if (existingMove) {
+        const room = await getDurableRoom(roomId);
+        return {
+          success: true,
+          idempotent: true,
+          state: room ? sanitizeRoomState(room) : null,
+        };
+      }
+    } catch {
+      // In-memory fallback if DB not available
+    }
+  }
+
+  // 2. Fetch room record
+  const room = await getDurableRoom(roomId);
+  if (!room) return { success: false, error: 'Room not found' };
+
+  if (room.gameOver) {
+    return { success: false, error: 'Match is already concluded' };
+  }
+
+  const turn = room.engine.getTurn();
+  const playerExpected = turn === 'w' ? room.whitePlayer : room.blackPlayer;
+  const expectedToken = turn === 'w' ? room.whitePlayerToken : room.blackPlayerToken;
+
+  if (expectedToken && playerToken && playerToken !== expectedToken) {
+    return { success: false, error: 'Unauthorized: Invalid player authorization token for current turn' };
+  }
+
+  if (playerExpected && playerId && playerExpected.id !== playerId) {
+    return { success: false, error: `Not your turn. Expected ${playerExpected.handle}` };
+  }
+
+  if (expectedSequence !== undefined && room.moveSequence !== undefined && expectedSequence !== room.moveSequence) {
+    return { success: false, error: `Out-of-order move sequence. Expected ${room.moveSequence}, got ${expectedSequence}` };
+  }
+
+  // 3. Make move on engine
+  const moveRes = room.engine.makeMove(moveInput);
+  if (!moveRes.success) {
+    return { success: false, error: 'Illegal move' };
+  }
+
+  room.lastMove = moveInput;
+  room.gameActive = true;
+  room.lastMoveTimestamp = Date.now();
+  const newSequence = (room.moveSequence || 0) + 1;
+  room.moveSequence = newSequence;
+
+  const currentHist = (room.engine.getState() as any)?.history;
+  if (Array.isArray(currentHist)) {
+    room.history = [...currentHist];
+  }
+
+  const winner = room.engine.checkWinner();
+  if (winner) {
+    room.gameOver = { winner: winner.winner, reason: winner.headline };
+    room.gameActive = false;
+  }
+
+  // 4. Atomic PostgreSQL commit
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Record move with unique commandId
+      if (commandId) {
+        await tx.roomMove.create({
+          data: {
+            roomId,
+            sequence: newSequence,
+            commandId,
+            playerId,
+            playerRole: turn,
+            moveData: moveInput,
+            resultingTurn: room.engine.getTurn(),
+          },
+        });
+      }
+
+      // Update room state
+      await tx.room.update({
+        where: { id: roomId },
+        data: {
+          currentTurn: room.engine.getTurn(),
+          moveSequence: newSequence,
+          currentState: room.engine.getState() as any,
+          lastMove: moveInput,
+          lastMoveTimestamp: BigInt(room.lastMoveTimestamp),
+          whiteTimeRemaining: room.whiteTime,
+          blackTimeRemaining: room.blackTime,
+          history: room.history,
+          status: room.gameOver ? 'completed' : 'active',
+          winner: room.gameOver ? room.gameOver.winner : null,
+          finishReason: room.gameOver ? room.gameOver.reason : null,
+        },
+      });
+    });
+
+    if (room.gameOver) {
+      await finalizeRoomMatch(room, room.gameOver);
+    }
+  } catch (txErr) {
+    console.warn('Durable move transaction notice (fallback to in-memory):', txErr);
+  }
+
+  const sanitized = sanitizeRoomState(room);
+
+  // 5. Broadcast to Supabase Realtime channel and local listeners
+  await broadcastRealtimeEvent(roomId, 'move:made', {
+    move: moveRes,
+    lastMove: moveInput,
+    state: sanitized,
+    originPlayerId: playerId || null,
+    commandId: commandId || null,
+    sequence: newSequence,
+  });
+
+  if (!room.gameOver) {
+    triggerBotMoveIfNeeded(room);
+  }
+
+  return { success: true, state: sanitized };
 }
 
 export function sanitizeRoomState(room: RoomState) {
@@ -285,6 +636,7 @@ export function sanitizeRoomState(room: RoomState) {
     board: room.engine.getBoard(),
     history: room.history,
     lastMove: room.lastMove,
+    moveSequence: room.moveSequence ?? 0,
     activeTurn: room.engine.getTurn(),
     whiteTime: room.whiteTime,
     blackTime: room.blackTime,
@@ -320,52 +672,98 @@ export function addChatMessage(
   return chatMsg;
 }
 
-export function offerDraw(room: RoomState, byRole: PlayerColor) {
+export async function offerDraw(room: RoomState, byRole: PlayerColor) {
   if (room.gameOver || !room.gameActive) return false;
   room.pendingDrawOffer = byRole;
+
+  try {
+    await prisma.room.update({
+      where: { id: room.id },
+      data: { pendingDrawOffer: byRole },
+    });
+  } catch {
+    // In-memory fallback
+  }
+
   broadcastToRoom(room, 'draw:offered', { by: byRole });
   return true;
 }
 
-export function respondDraw(room: RoomState, responderRole: PlayerColor, accept: boolean) {
+export async function respondDraw(room: RoomState, responderRole: PlayerColor, accept: boolean) {
   if (room.gameOver || !room.pendingDrawOffer || room.pendingDrawOffer === responderRole) {
     return false;
   }
 
   if (accept) {
     room.pendingDrawOffer = null;
-    finalizeRoomMatch(room, { winner: 'draw', reason: 'Draw agreed by mutual agreement' });
+    try {
+      await prisma.room.update({
+        where: { id: room.id },
+        data: { pendingDrawOffer: null, status: 'completed', winner: 'draw', finishReason: 'Draw agreed by mutual agreement' },
+      });
+    } catch {
+      // In-memory fallback
+    }
+    await finalizeRoomMatch(room, { winner: 'draw', reason: 'Draw agreed by mutual agreement' });
   } else {
     room.pendingDrawOffer = null;
+    try {
+      await prisma.room.update({
+        where: { id: room.id },
+        data: { pendingDrawOffer: null },
+      });
+    } catch {
+      // In-memory fallback
+    }
     broadcastToRoom(room, 'draw:declined', { by: responderRole });
   }
   return true;
 }
 
-export function resignGame(room: RoomState, resigningRole: PlayerColor) {
+export async function resignGame(room: RoomState, resigningRole: PlayerColor) {
   if (room.gameOver) return false;
   const winnerRole: PlayerColor = resigningRole === 'w' ? 'b' : 'w';
   const resigningName = resigningRole === 'w' ? (room.whitePlayer?.handle || 'White') : (room.blackPlayer?.handle || 'Black');
-  finalizeRoomMatch(room, {
+  const reason = `${resigningName} resigned`;
+
+  try {
+    await prisma.room.update({
+      where: { id: room.id },
+      data: { status: 'completed', winner: winnerRole, finishReason: reason },
+    });
+  } catch {
+    // In-memory fallback
+  }
+
+  await finalizeRoomMatch(room, {
     winner: winnerRole,
-    reason: `${resigningName} resigned`,
+    reason,
   });
   return true;
 }
 
-export function offerRematch(room: RoomState, byRole: PlayerColor) {
+export async function offerRematch(room: RoomState, byRole: PlayerColor) {
   if (!room.gameOver) return false;
   room.pendingRematchOffer = byRole;
+
+  try {
+    await prisma.room.update({
+      where: { id: room.id },
+      data: { pendingRematchOffer: byRole },
+    });
+  } catch {
+    // In-memory fallback
+  }
+
   broadcastToRoom(room, 'rematch:offered', { by: byRole });
   return true;
 }
 
-export function acceptRematch(room: RoomState, byRole: PlayerColor) {
+export async function acceptRematch(room: RoomState, byRole: PlayerColor) {
   if (!room.gameOver || !room.pendingRematchOffer || room.pendingRematchOffer === byRole) {
     return false;
   }
 
-  // Swap colors for rematch
   const oldWhite = room.whitePlayer;
   const oldBlack = room.blackPlayer;
   const oldWhiteToken = room.whitePlayerToken;
@@ -378,7 +776,6 @@ export function acceptRematch(room: RoomState, byRole: PlayerColor) {
     room.blackPlayerToken = oldWhiteToken;
   }
 
-  // Reset engine and clocks
   room.engine.reset(room.variant);
   if (room.gameId === 'chess') {
     room.chess = (room.engine as any).getInternalEngine();
@@ -389,9 +786,39 @@ export function acceptRematch(room: RoomState, byRole: PlayerColor) {
   room.gameActive = true;
   room.history = [];
   room.lastMove = null;
+  room.moveSequence = 0;
   room.gameOver = null;
   room.pendingDrawOffer = null;
   room.pendingRematchOffer = null;
+
+  try {
+    await prisma.room.update({
+      where: { id: room.id },
+      data: {
+        status: 'active',
+        whitePlayerId: room.whitePlayer?.id,
+        whitePlayerHandle: room.whitePlayer?.handle,
+        whitePlayerToken: room.whitePlayerToken,
+        blackPlayerId: room.blackPlayer?.id,
+        blackPlayerHandle: room.blackPlayer?.handle,
+        blackPlayerToken: room.blackPlayerToken,
+        whiteTimeRemaining: room.whiteTime,
+        blackTimeRemaining: room.blackTime,
+        lastMoveTimestamp: BigInt(room.lastMoveTimestamp),
+        currentTurn: 'w',
+        moveSequence: 0,
+        currentState: room.engine.getState() as any,
+        lastMove: Prisma.DbNull,
+        history: [],
+        winner: null,
+        finishReason: null,
+        pendingDrawOffer: null,
+        pendingRematchOffer: null,
+      },
+    });
+  } catch {
+    // In-memory fallback
+  }
 
   startRoomClock(room);
 
@@ -399,9 +826,7 @@ export function acceptRematch(room: RoomState, byRole: PlayerColor) {
     state: sanitizeRoomState(room),
   });
 
-  // If new white player is a bot, trigger first move
   triggerBotMoveIfNeeded(room);
-
   return true;
 }
 
@@ -419,26 +844,10 @@ export function triggerBotMoveIfNeeded(room: RoomState) {
         const botMove = await room.engine.findBotMove('medium');
         if (!botMove) return;
 
-        const moveRes = room.engine.makeMove(botMove);
-        if (!moveRes.success) return;
-
-        room.lastMove = botMove;
-        room.lastMoveTimestamp = Date.now();
-        const currentHist = (room.engine.getState() as any)?.history;
-        if (Array.isArray(currentHist)) {
-          room.history = [...currentHist];
-        }
-
-        const winner = room.engine.checkWinner();
-        if (winner) {
-          finalizeRoomMatch(room, { winner: winner.winner, reason: winner.headline });
-        }
-
-        broadcastToRoom(room, 'move:made', {
-          move: moveRes,
-          lastMove: botMove,
-          state: sanitizeRoomState(room),
-          originPlayerId: activePlayer.id,
+        await submitDurableMove({
+          roomId: room.id,
+          playerId: activePlayer.id,
+          moveInput: botMove,
           commandId: `bot_${Date.now()}`,
         });
       } catch (err) {
@@ -458,14 +867,12 @@ export function authenticateRoomPlayer(
   const token = bodyPlayerToken || tokenFromHeader;
   const session = getSessionFromRequest(req);
 
-  // Check White
   const isWhiteToken = Boolean(token && room.whitePlayerToken && token === room.whitePlayerToken);
   const isWhiteSession = Boolean(session && room.whitePlayer && session.userId === room.whitePlayer.id);
   if (isWhiteToken || isWhiteSession) {
     return 'w';
   }
 
-  // Check Black
   const isBlackToken = Boolean(token && room.blackPlayerToken && token === room.blackPlayerToken);
   const isBlackSession = Boolean(session && room.blackPlayer && session.userId === room.blackPlayer.id);
   if (isBlackToken || isBlackSession) {

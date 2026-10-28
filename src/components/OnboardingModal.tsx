@@ -257,7 +257,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
           <X className="w-4 h-4" />
         </button>
 
-        {/* Header with Neon Better Auth Badge & Stepper */}
+        {/* Header with Supabase Auth Badge & Stepper */}
         <div className="flex items-center justify-between border-b border-white/[0.06] pb-3 mb-4">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-[#00e599] animate-pulse" />

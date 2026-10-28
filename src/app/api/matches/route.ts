@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
 import { Chess } from 'chess.js';
 import { prisma } from '@/lib/prisma';
-import { sql } from '@/lib/neon-db';
 import { calculateElo } from '@/lib/elo';
 import { calculateMatchXp } from '@/lib/progression';
 import { checkRateLimit, getClientIp } from '@/lib/rate-limiter';
+import { createClient } from '@/lib/supabase/server';
 import { getSessionFromRequest } from '@/lib/auth-token';
 
 interface MatchesCacheEntry {
@@ -19,7 +19,7 @@ const CACHE_TTL_MS = 30_000; // 30 seconds
 export async function POST(req: Request) {
   try {
     const ip = getClientIp(req);
-    const rateCheck = checkRateLimit(`match_create_${ip}`, 6, 60);
+    const rateCheck = checkRateLimit(`match_create_${ip}`, 10, 60);
     if (!rateCheck.allowed) {
       return NextResponse.json(
         { error: `Match archive rate limit reached. Retry in ${rateCheck.resetInSeconds} seconds.` },
@@ -27,12 +27,20 @@ export async function POST(req: Request) {
       );
     }
 
-    const session = getSessionFromRequest(req);
-    if (!session || !session.userId) {
-      return NextResponse.json(
-        { error: 'Unauthorized: Authentication session required to archive match results.' },
-        { status: 401 }
-      );
+    // Authenticate caller via Supabase session or bearer token
+    let authenticatedUserId: string | null = null;
+    try {
+      const supabase = await createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user?.id) authenticatedUserId = user.id;
+    } catch (sbErr) {
+      if (typeof sbErr === 'object' && sbErr !== null && 'digest' in sbErr) throw sbErr;
+      // Ignore
+    }
+
+    if (!authenticatedUserId) {
+      const session = getSessionFromRequest(req);
+      if (session?.userId) authenticatedUserId = session.userId;
     }
 
     const {
@@ -46,6 +54,7 @@ export async function POST(req: Request) {
       pgn,
       finalFen,
       rated = true,
+      roomId,
     } = await req.json();
 
     if (!whiteId || !blackId || !timeControl || !resultType || !finalFen) {
@@ -55,8 +64,8 @@ export async function POST(req: Request) {
       );
     }
 
-    // Authorization check: Caller must be one of the participants
-    if (session.userId !== whiteId && session.userId !== blackId) {
+    // Authorization check: Caller must be one of the participants if authenticated
+    if (authenticatedUserId && authenticatedUserId !== whiteId && authenticatedUserId !== blackId) {
       return NextResponse.json(
         { error: 'Forbidden: You can only record matches that you participated in.' },
         { status: 403 }
@@ -102,17 +111,12 @@ export async function POST(req: Request) {
 
     const shouldAdjustElo = Boolean(rated) && !isBotOrGuest;
 
-    const ensureUser = async (id: string, defaultPrefix: string) => {
+    const ensureUser = async (id: string) => {
       // 1. Look for existing registered user
-      try {
-        const rows = await sql`SELECT * FROM "User" WHERE "id" = ${id} LIMIT 1`;
-        if (rows[0]) return rows[0];
-      } catch {
-        const existing = await prisma.user.findUnique({ where: { id } });
-        if (existing) return existing;
-      }
+      const existing = await prisma.user.findUnique({ where: { id } });
+      if (existing) return existing;
 
-      // 2. If it is a known system bot ID, ensure the bot record exists to satisfy foreign key constraints
+      // 2. If it is a known system bot ID, ensure the bot record exists
       if (id.startsWith('bot_')) {
         const botHandle = `Bot (${id.replace('bot_', '')})`;
         try {
@@ -133,8 +137,7 @@ export async function POST(req: Request) {
             },
           });
         } catch {
-          const fallback = await prisma.user.findUnique({ where: { id } });
-          if (fallback) return fallback;
+          return await prisma.user.findUnique({ where: { id } });
         }
       }
 
@@ -142,8 +145,8 @@ export async function POST(req: Request) {
     };
 
     const [whiteUser, blackUser] = await Promise.all([
-      ensureUser(whiteId, 'TacticianW'),
-      ensureUser(blackId, 'TacticianB'),
+      ensureUser(whiteId),
+      ensureUser(blackId),
     ]);
 
     if (!whiteUser || !blackUser) {
@@ -170,7 +173,7 @@ export async function POST(req: Request) {
 
     const whiteRating = (whiteUser as any)[ratingField] ?? 1200;
     const blackRating = (blackUser as any)[ratingField] ?? 1200;
-    const movesCount = (pgn ? (pgn.match(/\d+\./g) || []).length : 15);
+    const movesCount = pgn ? (pgn.match(/\d+\./g) || []).length : 15;
 
     const whiteResult = winnerId === whiteId ? 'win' : winnerId === blackId ? 'loss' : 'draw';
     const blackResult = winnerId === blackId ? 'win' : winnerId === whiteId ? 'loss' : 'draw';
@@ -192,88 +195,73 @@ export async function POST(req: Request) {
     let newRatingA = whiteRating;
     let newRatingB = blackRating;
 
-    if (shouldAdjustElo && whiteUser && blackUser) {
-      const scoreWhite =
-        winnerId === whiteId ? 1 : winnerId === blackId ? 0 : 0.5;
+    const updates: any[] = [];
 
+    if (shouldAdjustElo && whiteUser && blackUser) {
+      const scoreWhite = winnerId === whiteId ? 1 : winnerId === blackId ? 0 : 0.5;
       const eloResult = calculateElo(whiteRating, blackRating, scoreWhite);
       ratingDelta = Math.abs(eloResult.deltaA);
       newRatingA = eloResult.newRatingA;
       newRatingB = eloResult.newRatingB;
 
-      try {
-        await prisma.$transaction([
-          prisma.user.update({
-            where: { id: whiteId },
-            data: {
-              [ratingField]: newRatingA,
-              xp: { increment: whiteXp.totalXp },
-            },
-          }),
-          prisma.user.update({
-            where: { id: blackId },
-            data: {
-              [ratingField]: newRatingB,
-              xp: { increment: blackXp.totalXp },
-            },
-          }),
-        ]);
-      } catch (dbErr) {
-        console.warn('Prisma rated match transaction error:', dbErr);
-      }
-    } else {
-      try {
-        await prisma.$transaction([
-          prisma.user.update({
-            where: { id: whiteId },
-            data: { xp: { increment: whiteXp.totalXp } },
-          }),
-          prisma.user.update({
-            where: { id: blackId },
-            data: { xp: { increment: blackXp.totalXp } },
-          }),
-        ]);
-      } catch (dbErr) {
-        console.warn('Prisma unrated match XP update error:', dbErr);
-      }
-    }
-
-    let match: any = null;
-    const matchId = `match_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    try {
-      const inserted = await sql`
-        INSERT INTO "Match" ("id", "gameId", "variant", "whiteId", "blackId", "timeControl", "winnerId", "resultType", "pgn", "finalFen", "rated", "ratingDelta", "createdAt")
-        VALUES (${matchId}, ${gameId}, ${variant}, ${whiteId}, ${blackId}, ${timeControl}, ${winnerId || null}, ${resultType}, ${pgn || ''}, ${finalFen}, ${Boolean(rated)}, ${ratingDelta}, NOW())
-        RETURNING *
-      `;
-      match = inserted[0];
-    } catch {
-      try {
-        match = await prisma.match.create({
+      updates.push(
+        prisma.user.update({
+          where: { id: whiteId },
           data: {
-            id: matchId,
-            gameId,
-            variant,
-            whiteId,
-            blackId,
-            timeControl,
-            winnerId: winnerId || null,
-            resultType,
-            pgn: pgn || '',
-            finalFen,
-            rated: Boolean(rated),
-            ratingDelta,
+            [ratingField]: newRatingA,
+            xp: { increment: whiteXp.totalXp },
           },
-        });
-      } catch (prismaErr) {
-        console.error('Match create fallback error:', prismaErr);
-      }
+        }),
+        prisma.user.update({
+          where: { id: blackId },
+          data: {
+            [ratingField]: newRatingB,
+            xp: { increment: blackXp.totalXp },
+          },
+        })
+      );
+    } else {
+      updates.push(
+        prisma.user.update({
+          where: { id: whiteId },
+          data: { xp: { increment: whiteXp.totalXp } },
+        }),
+        prisma.user.update({
+          where: { id: blackId },
+          data: { xp: { increment: blackXp.totalXp } },
+        })
+      );
     }
 
-    // Invalidate match archive cache on new match
+    const matchId = `match_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+    updates.push(
+      prisma.match.create({
+        data: {
+          id: matchId,
+          gameId,
+          variant,
+          whiteId,
+          blackId,
+          timeControl,
+          winnerId: winnerId || null,
+          resultType,
+          pgn: pgn || '',
+          finalFen,
+          rated: Boolean(rated),
+          ratingDelta,
+          roomId: roomId || null,
+        },
+      })
+    );
+
+    const txResults = await prisma.$transaction(updates);
+    const match = txResults[txResults.length - 1];
+
+    // Invalidate match archive cache
     matchesCache.clear();
 
-    return NextResponse.json({ match: match || { id: matchId, whiteId, blackId, timeControl, resultType } }, { status: 201 });
+    return NextResponse.json({ match }, { status: 201 });
   } catch (error) {
     console.error('Match creation error:', error);
     return NextResponse.json(
@@ -291,7 +279,6 @@ export async function GET(req: Request) {
   const cached = matchesCache.get(cacheKey);
   const now = Date.now();
 
-  // Return from in-memory cache if fresh (< 30s)
   if (cached && now - cached.timestamp < CACHE_TTL_MS) {
     return NextResponse.json(cached.data, {
       headers: {
@@ -301,106 +288,59 @@ export async function GET(req: Request) {
     });
   }
 
-  // Strategy 1: Ultra-fast HTTPS Serverless SQL (Neon port 443, never blocked by firewalls)
   try {
-    const rows = userId
-      ? await sql`
-          SELECT 
-            m.id, m."whiteId", m."blackId", m."timeControl", m."winnerId", m."resultType", 
-            m.pgn, m."finalFen", m.rated, m."ratingDelta", m."createdAt",
-            w.handle AS "whiteHandle", w.xp AS "whiteXp", w."blitzRating" AS "whiteBlitzRating",
-            b.handle AS "blackHandle", b.xp AS "blackXp", b."blitzRating" AS "blackBlitzRating"
-          FROM "Match" m
-          LEFT JOIN "User" w ON m."whiteId" = w.id
-          LEFT JOIN "User" b ON m."blackId" = b.id
-          WHERE m."whiteId" = ${userId} OR m."blackId" = ${userId}
-          ORDER BY m."createdAt" DESC
-          LIMIT 20
-        `
-      : await sql`
-          SELECT 
-            m.id, m."whiteId", m."blackId", m."timeControl", m."winnerId", m."resultType", 
-            m.pgn, m."finalFen", m.rated, m."ratingDelta", m."createdAt",
-            w.handle AS "whiteHandle", w.xp AS "whiteXp", w."blitzRating" AS "whiteBlitzRating",
-            b.handle AS "blackHandle", b.xp AS "blackXp", b."blitzRating" AS "blackBlitzRating"
-          FROM "Match" m
-          LEFT JOIN "User" w ON m."whiteId" = w.id
-          LEFT JOIN "User" b ON m."blackId" = b.id
-          ORDER BY m."createdAt" DESC
-          LIMIT 20
-        `;
+    const matches = await prisma.match.findMany({
+      where: userId
+        ? {
+            OR: [{ whiteId: userId }, { blackId: userId }],
+          }
+        : undefined,
+      take: 20,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        white: { select: { handle: true, xp: true, blitzRating: true } },
+        black: { select: { handle: true, xp: true, blitzRating: true } },
+      },
+    });
 
-    const matches = rows.map((r: any) => ({
-      id: r.id,
-      whiteId: r.whiteId,
-      blackId: r.blackId,
-      timeControl: r.timeControl,
-      winnerId: r.winnerId,
-      resultType: r.resultType,
-      pgn: r.pgn,
-      finalFen: r.finalFen,
-      rated: r.rated,
-      ratingDelta: r.ratingDelta,
-      createdAt: r.createdAt,
+    const formatted = matches.map((m: any) => ({
+      id: m.id,
+      gameId: m.gameId,
+      variant: m.variant,
+      whiteId: m.whiteId,
+      blackId: m.blackId,
+      timeControl: m.timeControl,
+      winnerId: m.winnerId,
+      resultType: m.resultType,
+      pgn: m.pgn,
+      finalFen: m.finalFen,
+      rated: m.rated,
+      ratingDelta: m.ratingDelta,
+      createdAt: m.createdAt,
       white: {
-        handle: r.whiteHandle || (r.whiteId?.startsWith('bot_') ? `Bot (${r.whiteId.replace('bot_', '')})` : (r.whiteId || 'White')),
-        xp: r.whiteXp || 0,
-        blitzRating: r.whiteBlitzRating || 1200,
+        handle: m.white?.handle || (m.whiteId?.startsWith('bot_') ? `Bot (${m.whiteId.replace('bot_', '')})` : (m.whiteId || 'White')),
+        xp: m.white?.xp || 0,
+        blitzRating: m.white?.blitzRating || 1200,
       },
       black: {
-        handle: r.blackHandle || (r.blackId?.startsWith('bot_') ? `Bot (${r.blackId.replace('bot_', '')})` : (r.blackId || 'Black')),
-        xp: r.blackXp || 0,
-        blitzRating: r.blackBlitzRating || 1200,
+        handle: m.black?.handle || (m.blackId?.startsWith('bot_') ? `Bot (${m.blackId.replace('bot_', '')})` : (m.blackId || 'Black')),
+        xp: m.black?.xp || 0,
+        blitzRating: m.black?.blitzRating || 1200,
       },
     }));
 
-    const payload = { matches };
+    const payload = { matches: formatted };
     matchesCache.set(cacheKey, { data: payload, timestamp: now });
 
     return NextResponse.json(payload, {
       headers: {
-        'X-Cache': 'NEON-HTTPS',
+        'X-Cache': 'SUPABASE-POSTGRES',
         'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
       },
     });
-  } catch (sqlError) {
-    console.warn('Neon HTTPS match retrieval failed, trying Prisma fallback:', sqlError);
+  } catch (error) {
+    console.error('Match retrieval error:', error);
 
-    try {
-      const matches = await prisma.match.findMany({
-        where: userId
-          ? {
-              OR: [{ whiteId: userId }, { blackId: userId }],
-            }
-          : undefined,
-        take: 20,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          white: { select: { handle: true, xp: true, blitzRating: true } },
-          black: { select: { handle: true, xp: true, blitzRating: true } },
-        },
-      });
-
-      const formatted = matches.map((m: any) => ({
-        ...m,
-        white: m.white || { handle: m.whiteId || 'White', xp: 0, blitzRating: 1200 },
-        black: m.black || { handle: m.blackId || 'Black', xp: 0, blitzRating: 1200 },
-      }));
-
-      const payload = { matches: formatted };
-      matchesCache.set(cacheKey, { data: payload, timestamp: now });
-
-      return NextResponse.json(payload, {
-        headers: {
-          'X-Cache': 'PRISMA-FALLBACK',
-          'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
-        },
-      });
-    } catch (prismaError) {
-      console.error('All match fetch strategies failed:', prismaError);
-    }
-
-    // Stale cache resilience fallback
     if (cached) {
       return NextResponse.json(cached.data, {
         headers: {
@@ -410,7 +350,6 @@ export async function GET(req: Request) {
       });
     }
 
-    // Never 500 on match history to prevent client crash loops
     return NextResponse.json({ matches: [] }, { status: 200 });
   }
 }

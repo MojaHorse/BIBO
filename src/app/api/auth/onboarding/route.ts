@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { sql } from '@/lib/neon-db';
 import bcrypt from 'bcryptjs';
-import { getSessionFromRequest, createSessionToken } from '@/lib/auth-token';
+import { createClient } from '@/lib/supabase/server';
+import { getSessionFromRequest } from '@/lib/auth-token';
 
 const HANDLE_REGEX = /^[a-zA-Z0-9_]{3,20}$/;
 
@@ -35,67 +35,78 @@ export async function POST(req: Request) {
     const ratingValue = Math.min(2400, Math.max(600, Number(initialRating) || 1200));
     const cleanXp = Math.max(0, Math.min(500_000, Number(guestXp) || 0));
 
-    // Check if user is already authenticated via session cookie
-    const currentSession = getSessionFromRequest(req);
-    const targetUserId = currentSession?.userId;
-
-    // Check handle collision via Neon HTTPS Serverless
+    // Check if user is already authenticated via Supabase session or token
+    let targetUserId: string | null = null;
     try {
-      const conflicts = await sql`
-        SELECT "id" FROM "User" 
-        WHERE LOWER("handle") = LOWER(${cleanHandle})
-        ${targetUserId ? sql`AND "id" != ${targetUserId}` : sql``}
-        LIMIT 1
-      `;
-      if (conflicts.length > 0) {
-        return NextResponse.json({ error: 'Handle is already claimed by another tactician.' }, { status: 409 });
+      const supabase = await createClient();
+      const { data: { user: sbUser } } = await supabase.auth.getUser();
+      if (sbUser?.id) {
+        targetUserId = sbUser.id;
       }
-    } catch (checkErr) {
-      console.warn('Handle check notice:', checkErr);
+    } catch (authErr) {
+      if (typeof authErr === 'object' && authErr !== null && 'digest' in authErr) throw authErr;
+      // Ignore
+    }
+
+    if (!targetUserId) {
+      const currentSession = getSessionFromRequest(req);
+      targetUserId = currentSession?.userId || null;
+    }
+
+    // Check handle collision
+    const handleConflict = await prisma.user.findFirst({
+      where: {
+        handle: { equals: cleanHandle, mode: 'insensitive' },
+        ...(targetUserId ? { id: { not: targetUserId } } : {}),
+      },
+      select: { id: true },
+    });
+
+    if (handleConflict) {
+      return NextResponse.json({ error: 'Handle is already claimed by another tactician.' }, { status: 409 });
     }
 
     let user: any = null;
-    let neonSetCookie: string | null = null;
 
     if (targetUserId) {
-      // 1. Existing user updating their tactician dossier
-      // SECURITY CHECK: If already onboarded, prevent arbitrary competitive rating alteration!
-      const existingRows = await sql`SELECT "id", "onboarded" FROM "User" WHERE "id" = ${targetUserId} LIMIT 1`;
-      const isAlreadyOnboarded = Boolean(existingRows[0]?.onboarded);
+      // Existing user updating their tactician dossier
+      const existingUser = await prisma.user.findUnique({
+        where: { id: targetUserId },
+        select: { id: true, onboarded: true },
+      });
 
-      if (isAlreadyOnboarded) {
-        // Safe profile update only (ratings cannot be manipulated)
-        await sql`
-          UPDATE "User"
-          SET "handle" = ${cleanHandle},
-              "displayName" = ${cleanDisplayName},
-              "avatar" = ${cleanAvatar},
-              "playStyle" = ${cleanStyle}
-          WHERE "id" = ${targetUserId}
-        `;
+      if (existingUser?.onboarded) {
+        // Safe profile update only (ratings cannot be manipulated once onboarded)
+        user = await prisma.user.update({
+          where: { id: targetUserId },
+          data: {
+            handle: cleanHandle,
+            displayName: cleanDisplayName,
+            avatar: cleanAvatar,
+            playStyle: cleanStyle,
+          },
+        });
       } else {
-        // First-time onboarding only: set initial ratings
-        await sql`
-          UPDATE "User"
-          SET "handle" = ${cleanHandle},
-              "displayName" = ${cleanDisplayName},
-              "avatar" = ${cleanAvatar},
-              "playStyle" = ${cleanStyle},
-              "blitzRating" = ${ratingValue},
-              "rapidRating" = ${ratingValue},
-              "bulletRating" = ${ratingValue},
-              "checkersRating" = ${ratingValue},
-              "morabarabaRating" = ${ratingValue},
-              "onboarded" = true
-              ${cleanXp > 0 ? sql`, "xp" = "xp" + ${cleanXp}` : sql``}
-          WHERE "id" = ${targetUserId}
-        `;
+        // First-time onboarding only: calibrate initial ratings
+        user = await prisma.user.update({
+          where: { id: targetUserId },
+          data: {
+            handle: cleanHandle,
+            displayName: cleanDisplayName,
+            avatar: cleanAvatar,
+            playStyle: cleanStyle,
+            blitzRating: ratingValue,
+            rapidRating: ratingValue,
+            bulletRating: ratingValue,
+            checkersRating: ratingValue,
+            morabarabaRating: ratingValue,
+            onboarded: true,
+            ...(cleanXp > 0 ? { xp: { increment: cleanXp } } : {}),
+          },
+        });
       }
-
-      const rows = await sql`SELECT * FROM "User" WHERE "id" = ${targetUserId} LIMIT 1`;
-      user = rows[0];
     } else {
-      // 2. New account onboarding
+      // New account onboarding
       const cleanEmail = email?.trim().toLowerCase();
       if (!cleanEmail || !password || password.length < 6) {
         return NextResponse.json(
@@ -105,80 +116,84 @@ export async function POST(req: Request) {
       }
 
       // Check email collision
-      const emailConflicts = await sql`SELECT "id" FROM "User" WHERE LOWER("email") = LOWER(${cleanEmail}) LIMIT 1`;
-      if (emailConflicts.length > 0) {
+      const emailConflict = await prisma.user.findUnique({
+        where: { email: cleanEmail },
+        select: { id: true },
+      });
+
+      if (emailConflict) {
         return NextResponse.json({ error: 'Email is already registered. Please sign in.' }, { status: 409 });
       }
 
-      // Register with Neon Managed Better Auth (if configured)
-      const neonAuthBase = process.env.NEON_AUTH_BASE_URL;
-      let neonUserId: string | null = null;
-
-      if (neonAuthBase) {
-        try {
-          const origin = req.headers.get('origin') || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-          const neonRes = await fetch(`${neonAuthBase}/sign-up/email`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Origin': origin,
+      // Register with Supabase Auth
+      let supabaseUserId: string | null = null;
+      try {
+        const supabase = await createClient();
+        const { data: authData, error: authError } = await supabase.auth.signUp({
+          email: cleanEmail,
+          password,
+          options: {
+            data: {
+              handle: cleanHandle,
+              displayName: cleanDisplayName,
             },
-            body: JSON.stringify({
-              email: cleanEmail,
-              password,
-              name: cleanDisplayName,
-            }),
-          });
+          },
+        });
 
-          const neonData = await neonRes.json().catch(() => null);
-          if (neonRes.ok && neonData?.user?.id) {
-            neonUserId = neonData.user.id;
-            neonSetCookie = neonRes.headers.get('set-cookie');
-          }
-        } catch (neonErr) {
-          console.warn('Neon Better Auth onboarding signup notice:', neonErr);
+        if (!authError && authData?.user?.id) {
+          supabaseUserId = authData.user.id;
         }
+      } catch (authErr) {
+        if (typeof authErr === 'object' && authErr !== null && 'digest' in authErr) throw authErr;
+        console.warn('Supabase onboarding signup notice:', authErr);
       }
 
       const passwordHash = await bcrypt.hash(password, 10);
-      const generatedId = neonUserId || crypto.randomUUID();
+      const generatedId = supabaseUserId || crypto.randomUUID();
 
-      await sql`
-        INSERT INTO "User" ("id", "handle", "displayName", "avatar", "playStyle", "email", "passwordHash", "blitzRating", "rapidRating", "bulletRating", "xp", "onboarded")
-        VALUES (${generatedId}, ${cleanHandle}, ${cleanDisplayName}, ${cleanAvatar}, ${cleanStyle}, ${cleanEmail}, ${passwordHash}, ${ratingValue}, ${ratingValue}, ${ratingValue}, ${cleanXp}, true)
-        ON CONFLICT ("email") DO UPDATE
-        SET "handle" = EXCLUDED."handle", "displayName" = EXCLUDED."displayName", "avatar" = EXCLUDED."avatar", "playStyle" = EXCLUDED."playStyle", "onboarded" = true
-      `;
-
-      const rows = await sql`SELECT * FROM "User" WHERE "id" = ${generatedId} LIMIT 1`;
-      user = rows[0];
+      user = await prisma.user.upsert({
+        where: { email: cleanEmail },
+        update: {
+          handle: cleanHandle,
+          displayName: cleanDisplayName,
+          avatar: cleanAvatar,
+          playStyle: cleanStyle,
+          onboarded: true,
+        },
+        create: {
+          id: generatedId,
+          handle: cleanHandle,
+          displayName: cleanDisplayName,
+          avatar: cleanAvatar,
+          playStyle: cleanStyle,
+          email: cleanEmail,
+          passwordHash,
+          blitzRating: ratingValue,
+          rapidRating: ratingValue,
+          bulletRating: ratingValue,
+          checkersRating: ratingValue,
+          morabarabaRating: ratingValue,
+          xp: cleanXp,
+          onboarded: true,
+        },
+      });
     }
 
     // Migrate guest matches if provided
     if (guestId && typeof guestId === 'string' && guestId.startsWith('guest_') && user) {
       try {
-        await sql`UPDATE "Match" SET "whiteId" = ${user.id} WHERE "whiteId" = ${guestId}`;
-        await sql`UPDATE "Match" SET "blackId" = ${user.id} WHERE "blackId" = ${guestId}`;
-        await sql`UPDATE "Match" SET "winnerId" = ${user.id} WHERE "winnerId" = ${guestId}`;
+        await prisma.$transaction([
+          prisma.match.updateMany({ where: { whiteId: guestId }, data: { whiteId: user.id } }),
+          prisma.match.updateMany({ where: { blackId: guestId }, data: { blackId: user.id } }),
+          prisma.match.updateMany({ where: { winnerId: guestId }, data: { winnerId: user.id } }),
+        ]);
       } catch (migrationErr) {
         console.warn('Guest match migration notice:', migrationErr);
       }
     }
 
-    const token = createSessionToken({
-      id: user.id,
-      handle: user.handle,
-      email: user.email,
-    });
-
-    const isProd = process.env.NODE_ENV === 'production';
-    const cookieHeader = `obscura_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${
-      isProd ? '; Secure' : ''
-    }`;
-
-    const res = NextResponse.json({
+    return NextResponse.json({
       success: true,
-      token,
       user: {
         id: user.id,
         handle: user.handle,
@@ -193,13 +208,6 @@ export async function POST(req: Request) {
         onboarded: user.onboarded,
       },
     });
-
-    res.headers.set('Set-Cookie', cookieHeader);
-    if (neonSetCookie) {
-      res.headers.append('Set-Cookie', neonSetCookie);
-    }
-
-    return res;
   } catch (error) {
     console.error('Onboarding processing error:', error);
     return NextResponse.json({ error: 'Tactician onboarding could not be completed.' }, { status: 500 });

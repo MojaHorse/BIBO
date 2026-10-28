@@ -110,16 +110,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <X className="w-4 h-4" />
         </button>
 
-        {/* Neon Auth Indicator */}
+        {/* Supabase Auth Indicator */}
         <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-white/[0.06]">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-[#00e599] animate-pulse" />
             <span className="font-mono text-[10px] uppercase text-zinc-300 font-bold tracking-wider flex items-center gap-1">
-              <span>Neon Better Auth</span>
+              <span>Supabase Auth</span>
             </span>
           </div>
           <span className="text-[10px] font-mono text-[#00e599] bg-[#00e599]/10 px-1.5 py-0.5 rounded border border-[#00e599]/20 font-bold">
-            neon_auth schema
+            supabase_auth
           </span>
         </div>
 
@@ -129,7 +129,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             {tab === 'signin' ? 'Sign into BIBO' : 'Create Tactician Account'}
           </h2>
           <p className="text-xs text-zinc-400 mt-0.5">
-            Database-native authentication powered by Neon Managed Better Auth.
+            Database-native authentication powered by Supabase Auth.
           </p>
         </div>
 

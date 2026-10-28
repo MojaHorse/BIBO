@@ -1,20 +1,29 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { verifySessionToken } from '@/lib/auth-token';
 
 export function proxy(request: NextRequest) {
-  const obscuraToken = request.cookies.get('obscura_session')?.value;
-  const neonToken = request.cookies.get('better-auth.session_token')?.value;
+  const allCookies = request.cookies.getAll();
+  const sbAuthCookie = allCookies.find((c) => c.name.startsWith('sb-') && c.name.includes('-auth-token'));
+  const sessionCookie = request.cookies.get('bibo_session')?.value || request.cookies.get('obscura_session')?.value;
 
   let isValid = false;
 
-  if (obscuraToken) {
-    const session = verifySessionToken(obscuraToken);
-    if (session && session.userId && !session.userId.startsWith('guest_')) {
-      isValid = true;
-    }
-  } else if (neonToken && neonToken.length > 10) {
+  if (sbAuthCookie && sbAuthCookie.value.length > 10) {
     isValid = true;
+  } else if (sessionCookie) {
+    try {
+      const parts = sessionCookie.split('.');
+      if (parts.length >= 2) {
+        const base64 = parts[0].replace(/-/g, '+').replace(/_/g, '/');
+        const payloadStr = Buffer.from(base64, 'base64').toString('utf8');
+        const payload = JSON.parse(payloadStr);
+        if (payload.userId && !payload.userId.startsWith('guest_')) {
+          isValid = true;
+        }
+      }
+    } catch {
+      isValid = false;
+    }
   }
 
   if (!isValid) {

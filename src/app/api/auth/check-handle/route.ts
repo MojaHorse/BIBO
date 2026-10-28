@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { sql } from '@/lib/neon-db';
 
 const HANDLE_REGEX = /^[a-zA-Z0-9_]{3,20}$/;
 
@@ -51,54 +50,27 @@ export async function GET(req: Request) {
     return NextResponse.json({ valid: false, error: 'This handle is reserved by system command' });
   }
 
-  // Check collision excluding current user
-  try {
-    const rows = await sql`
-      SELECT "id" FROM "User"
-      WHERE LOWER("handle") = LOWER(${handle})
-      ${userId ? sql`AND "id" != ${userId}` : sql``}
-      LIMIT 1
-    `;
+  const existing = await prisma.user.findFirst({
+    where: {
+      handle: { equals: handle, mode: 'insensitive' },
+      ...(userId ? { id: { not: userId } } : {}),
+    },
+    select: { id: true },
+  });
 
-    if (rows.length > 0) {
-      const randomSuffix = Math.floor(Math.random() * 899 + 100);
-      const suggestions = [
-        `${handle}_${randomSuffix}`,
-        `Grandmaster_${handle}`,
-        `${handle}_Chess`,
-      ];
-      return NextResponse.json({
-        valid: false,
-        available: false,
-        error: 'Handle is already taken',
-        suggestions,
-      });
-    }
-  } catch (sqlErr) {
-    console.warn('Neon SQL handle check failed, using Prisma fallback:', sqlErr);
-
-    const existing = await prisma.user.findFirst({
-      where: {
-        handle: { equals: handle, mode: 'insensitive' },
-        ...(userId ? { id: { not: userId } } : {}),
-      },
-      select: { id: true },
+  if (existing) {
+    const randomSuffix = Math.floor(Math.random() * 899 + 100);
+    const suggestions = [
+      `${handle}_${randomSuffix}`,
+      `Grandmaster_${handle}`,
+      `${handle}_Chess`,
+    ];
+    return NextResponse.json({
+      valid: false,
+      available: false,
+      error: 'Handle is already taken',
+      suggestions,
     });
-
-    if (existing) {
-      const randomSuffix = Math.floor(Math.random() * 899 + 100);
-      const suggestions = [
-        `${handle}_${randomSuffix}`,
-        `Grandmaster_${handle}`,
-        `${handle}_Chess`,
-      ];
-      return NextResponse.json({
-        valid: false,
-        available: false,
-        error: 'Handle is already taken',
-        suggestions,
-      });
-    }
   }
 
   return NextResponse.json({

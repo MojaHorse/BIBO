@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { activeRooms, offerDraw, respondDraw, authenticateRoomPlayer } from '@/lib/room-manager';
+import { getDurableRoom, offerDraw, respondDraw, authenticateRoomPlayer } from '@/lib/room-manager';
 
 export async function POST(
   req: Request,
   context: { params: Promise<{ roomId: string }> }
 ) {
   const { roomId } = await context.params;
-  const room = activeRooms.get(roomId);
+  const room = await getDurableRoom(roomId);
   if (!room) {
     return NextResponse.json({ error: 'Room not found' }, { status: 404 });
   }
@@ -21,17 +21,17 @@ export async function POST(
     }
 
     if (action === 'offer') {
-      const ok = offerDraw(room, role);
+      const ok = await offerDraw(room, role);
       return NextResponse.json({ success: ok, pendingDrawOffer: room.pendingDrawOffer });
     }
 
     if (action === 'accept') {
-      const ok = respondDraw(room, role, true);
+      const ok = await respondDraw(room, role, true);
       return NextResponse.json({ success: ok, gameOver: room.gameOver });
     }
 
     if (action === 'decline') {
-      const ok = respondDraw(room, role, false);
+      const ok = await respondDraw(room, role, false);
       return NextResponse.json({ success: ok });
     }
 

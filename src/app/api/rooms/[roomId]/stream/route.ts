@@ -1,4 +1,4 @@
-import { activeRooms, sanitizeRoomState, broadcastToRoom } from '@/lib/room-manager';
+import { getDurableRoom, sanitizeRoomState, broadcastToRoom } from '@/lib/room-manager';
 
 export const maxDuration = 60;
 
@@ -9,7 +9,7 @@ export async function GET(
   const { roomId } = await context.params;
   const url = new URL(req.url);
   const playerId = url.searchParams.get('playerId');
-  const room = activeRooms.get(roomId);
+  const room = await getDurableRoom(roomId);
 
   if (!room) {
     return new Response('Room not found', { status: 404 });
@@ -49,7 +49,7 @@ export async function GET(
 
       room.listeners.add(listener);
 
-      // Heartbeat ping every 15s to keep connection open through firewalls
+      // Heartbeat ping every 15s
       const pingInterval = setInterval(() => {
         try {
           controller.enqueue(encoder.encode(': ping\n\n'));

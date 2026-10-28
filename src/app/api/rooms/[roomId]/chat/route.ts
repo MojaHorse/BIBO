@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { activeRooms, addChatMessage } from '@/lib/room-manager';
+import { getDurableRoom, addChatMessage } from '@/lib/room-manager';
 import { PlayerColor } from '@/lib/games/types';
 
 export async function GET(
@@ -7,7 +7,7 @@ export async function GET(
   context: { params: Promise<{ roomId: string }> }
 ) {
   const { roomId } = await context.params;
-  const room = activeRooms.get(roomId);
+  const room = await getDurableRoom(roomId);
   if (!room) {
     return NextResponse.json({ error: 'Room not found' }, { status: 404 });
   }
@@ -20,7 +20,7 @@ export async function POST(
   context: { params: Promise<{ roomId: string }> }
 ) {
   const { roomId } = await context.params;
-  const room = activeRooms.get(roomId);
+  const room = await getDurableRoom(roomId);
   if (!room) {
     return NextResponse.json({ error: 'Room not found' }, { status: 404 });
   }

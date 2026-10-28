@@ -25,7 +25,7 @@ test('Observability: Logger sanitizes passwords, connection strings, and tokens'
     logger.info('Test log event', {
       password: 'supersecretpassword',
       token: 'jwt.token.string',
-      database_url: 'postgresql://admin:supersecret@cluster.neon.tech/neondb',
+      database_url: 'postgresql://admin:supersecret@aws-0-us-east-1.pooler.supabase.com:6543/postgres',
       safeField: 'normalValue',
     });
 
