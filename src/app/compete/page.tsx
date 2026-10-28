@@ -71,68 +71,7 @@ function CompeteContent() {
     }
   }, [tabParam]);
 
-  const [tournaments, setTournaments] = useState<Tournament[]>([
-    {
-      id: 'tourn_blitz_1',
-      title: 'Weekend Blitz Championship',
-      gameId: 'chess',
-      gameName: 'Chess 8x8',
-      icon: Swords,
-      status: 'upcoming',
-      timeLabel: 'Starts in 2h 24m',
-      playersJoined: 3,
-      maxPlayers: 8,
-      format: 'Swiss 5 Rounds',
-      timeControl: '3+2 Blitz',
-      prizeXp: 500,
-      joined: false,
-    },
-    {
-      id: 'tourn_chk_1',
-      title: 'Grandmasters Checkers Open',
-      gameId: 'checkers',
-      gameName: 'Checkers',
-      icon: Crown,
-      status: 'upcoming',
-      timeLabel: 'Starts tomorrow at 18:00',
-      playersJoined: 14,
-      maxPlayers: 32,
-      format: 'Single Elimination',
-      timeControl: '5+0 Rapid',
-      prizeXp: 350,
-      joined: false,
-    },
-    {
-      id: 'tourn_mor_1',
-      title: 'Morabaraba Kraal Masters',
-      gameId: 'morabaraba',
-      gameName: 'Morabaraba',
-      icon: Shield,
-      status: 'live',
-      timeLabel: 'Ends in 3h 45m',
-      playersJoined: 28,
-      maxPlayers: 32,
-      format: 'Traditional 3-Phase',
-      timeControl: '5+0 Classical',
-      prizeXp: 400,
-      joined: false,
-    },
-    {
-      id: 'tourn_chk_live',
-      title: 'Checkers Sprint Cup',
-      gameId: 'checkers',
-      gameName: 'Checkers',
-      icon: Crown,
-      status: 'live',
-      timeLabel: 'Ends in 1h 12m',
-      playersJoined: 42,
-      maxPlayers: 64,
-      format: 'Single Elimination',
-      timeControl: '3+0 Blitz',
-      prizeXp: 300,
-      joined: false,
-    },
-  ]);
+  const [tournaments, setTournaments] = useState<Tournament[]>([]);
 
   const [leaderboardData, setLeaderboardData] = useState<LeaderboardEntry[]>([]);
   const [loadingLeaderboard, setLoadingLeaderboard] = useState(true);

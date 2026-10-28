@@ -110,7 +110,7 @@ export default function FriendsPage() {
       handle: newFriendHandle.trim(),
       status: 'online',
       gameActivity: 'Online · Just added',
-      rating: 1250,
+      rating: 1200,
       avatarBg: 'from-[#FF6A00] to-amber-500',
     };
 

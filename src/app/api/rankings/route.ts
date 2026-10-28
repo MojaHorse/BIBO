@@ -10,17 +10,6 @@ interface CacheEntry {
 const rankingCache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 60 * 1000; // 60 seconds TTL
 
-const FALLBACK_LEADERBOARD = [
-  { rankNumber: 1, id: 'u_1', handle: 'Grandmaster_Noir', blitzRating: 2420, rapidRating: 2390, bulletRating: 2450, checkersRating: 2100, morabarabaRating: 2050, xp: 68500, tier: { badge: 'GMD', title: 'Grandmaster', minXp: 50000 }, totalMatches: 312, winRate: '68%' },
-  { rankNumber: 2, id: 'u_2', handle: 'BoxwoodStriker', blitzRating: 2310, rapidRating: 2280, bulletRating: 2340, checkersRating: 2020, morabarabaRating: 1980, xp: 48200, tier: { badge: 'MST', title: 'Master', minXp: 30000 }, totalMatches: 245, winRate: '64%' },
-  { rankNumber: 3, id: 'u_3', handle: 'TacticalBishop', blitzRating: 2190, rapidRating: 2150, bulletRating: 2210, checkersRating: 1940, morabarabaRating: 1910, xp: 32400, tier: { badge: 'EXP', title: 'Expert', minXp: 18000 }, totalMatches: 189, winRate: '61%' },
-  { rankNumber: 4, id: 'u_4', handle: 'EndgameOracle', blitzRating: 2050, rapidRating: 2020, bulletRating: 2080, checkersRating: 1880, morabarabaRating: 1850, xp: 21500, tier: { badge: 'VET', title: 'Veteran', minXp: 10000 }, totalMatches: 154, winRate: '58%' },
-  { rankNumber: 5, id: 'u_5', handle: 'BiboKnight', blitzRating: 1940, rapidRating: 1910, bulletRating: 1960, checkersRating: 1800, morabarabaRating: 1790, xp: 14200, tier: { badge: 'VET', title: 'Veteran', minXp: 10000 }, totalMatches: 118, winRate: '55%' },
-  { rankNumber: 6, id: 'u_6', handle: 'PawnPusher99', blitzRating: 1820, rapidRating: 1800, bulletRating: 1840, checkersRating: 1720, morabarabaRating: 1710, xp: 9500, tier: { badge: 'ADE', title: 'Adept', minXp: 5000 }, totalMatches: 87, winRate: '53%' },
-  { rankNumber: 7, id: 'u_7', handle: 'CheckmateArtist', blitzRating: 1710, rapidRating: 1690, bulletRating: 1730, checkersRating: 1650, morabarabaRating: 1640, xp: 6200, tier: { badge: 'ADE', title: 'Adept', minXp: 5000 }, totalMatches: 65, winRate: '51%' },
-  { rankNumber: 8, id: 'u_8', handle: 'FianchettoGhost', blitzRating: 1600, rapidRating: 1580, bulletRating: 1620, checkersRating: 1580, morabarabaRating: 1570, xp: 4100, tier: { badge: 'STR', title: 'Strategist', minXp: 2000 }, totalMatches: 48, winRate: '50%' },
-];
-
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const category = (searchParams.get('category') || 'blitz').toLowerCase();
@@ -144,11 +133,11 @@ export async function GET(req: Request) {
     }
 
     return NextResponse.json(
-      { leaderboard: FALLBACK_LEADERBOARD },
+      { leaderboard: [] },
       {
         headers: {
-          'X-Cache': 'STATIC-FALLBACK',
-          'X-Resilience-Notice': 'Served from fallback vault due to database timeout',
+          'X-Cache': 'EMPTY-FALLBACK',
+          'X-Resilience-Notice': 'Zero ranked tacticians or database unreachable',
         },
       }
     );
