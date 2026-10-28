@@ -169,32 +169,9 @@ export class CheckersEngine {
     const p = this.board[r][c];
     if (!p) return moves;
 
-    // Flying Kings: can slide any number of empty squares along all 4 diagonals
-    if (this.isKing(p)) {
-      const kingDirs: [number, number][] = [
-        [-1, -1],
-        [-1, 1],
-        [1, -1],
-        [1, 1],
-      ];
-      for (const [dr, dc] of kingDirs) {
-        let step = 1;
-        while (true) {
-          const nr = r + dr * step;
-          const nc = c + dc * step;
-          if (!this.isValidPosition(nr, nc)) break;
-          if (this.board[nr][nc] !== null) break;
-          moves.push({
-            from: { row: r, col: c },
-            to: { row: nr, col: nc },
-          });
-          step++;
-        }
-      }
-      return moves;
-    }
-
+    // Standard 8x8 American Checkers (English Draughts):
     // Regular Men: 1 step forward diagonally
+    // Kings: 1 step in any of the 4 diagonal directions
     const directions = this.getMoveDirections(p);
     for (const [dr, dc] of directions) {
       const nr = r + dr;
@@ -217,68 +194,11 @@ export class CheckersEngine {
 
     const opponent = this.turn === 'w' ? 'b' : 'w';
 
-    // Flying Kings: Raycast along all 4 diagonals. Can jump an opponent piece at any distance
-    // and land on any vacant square behind the captured piece.
-    if (this.isKing(p)) {
-      const kingDirs: [number, number][] = [
-        [-1, -1],
-        [-1, 1],
-        [1, -1],
-        [1, 1],
-      ];
-      for (const [dr, dc] of kingDirs) {
-        let step = 1;
-        let opponentPos: Position | null = null;
-
-        while (true) {
-          const nr = r + dr * step;
-          const nc = c + dc * step;
-          if (!this.isValidPosition(nr, nc)) break;
-
-          const pieceAtSq = this.board[nr][nc];
-
-          if (opponentPos === null) {
-            if (pieceAtSq === null) {
-              // Empty space between king and opponent piece
-              step++;
-              continue;
-            } else if (this.isPieceOfColor(pieceAtSq, opponent)) {
-              // Found opponent piece to potentially capture
-              opponentPos = { row: nr, col: nc };
-              step++;
-              continue;
-            } else {
-              // Friendly piece blocks the ray before reaching any opponent
-              break;
-            }
-          } else {
-            // Already found opponent piece along ray
-            if (pieceAtSq === null) {
-              // Valid landing square behind the captured piece
-              jumps.push({
-                from: { row: r, col: c },
-                to: { row: nr, col: nc },
-                captured: opponentPos,
-              });
-              step++;
-            } else {
-              // Blocked by another piece (friendly or opponent) after the captured piece
-              break;
-            }
-          }
-        }
-      }
-
-      return jumps;
-    }
-
-    // Regular Men: Jump adjacent opponent piece forward and backward (International Draughts rule)
-    const jumpDirs: [number, number][] = [
-      [-1, -1],
-      [-1, 1],
-      [1, -1],
-      [1, 1],
-    ];
+    // Standard 8x8 American Checkers (English Draughts):
+    // Men jump adjacent opponent piece forward diagonally only (2 steps, landing immediately behind).
+    // Kings jump adjacent opponent piece in all 4 diagonal directions (2 steps, landing immediately behind).
+    // Men can NEVER jump backwards!
+    const jumpDirs = this.getMoveDirections(p);
 
     for (const [dr, dc] of jumpDirs) {
       const midR = r + dr;
@@ -381,9 +301,11 @@ export class CheckersEngine {
     this.history.push(notation);
 
     // Multi-jump check:
-    // If it was a capture, check for consecutive jumps (supports in-stride King flying jumps)
+    // If it was a capture and the piece did not promote to King this turn,
+    // check for consecutive jumps.
+    // Under official American Checkers rules, crowning terminates the turn immediately.
     let turnSwitched = true;
-    if (isCapture) {
+    if (isCapture && !isPromotion) {
       const consecutiveJumps = this.getJumpsForPiece(toR, toC);
       if (consecutiveJumps.length > 0) {
         match.subsequentJumps = consecutiveJumps;

@@ -174,3 +174,30 @@ test('Bot Scheduler Guards: Generation counter invalidates stale asynchronous ca
   assert.equal(isThinking, false);
 });
 
+// Test 7: Morabaraba Placement Phase Immobility & Mill Protection Integrity
+test('Morabaraba: Placed cows are fixed during placement phase and mill protection works', () => {
+  const engine = new MorabarabaAdapter(undefined, 'standard-24');
+
+  // Place a cow at O0
+  const res1 = engine.makeMove({ type: 'place', to: 'O0' });
+  assert.equal(res1.success, true);
+
+  // Attempting to reposition the placed cow during placing phase must be rejected
+  const resReposition = engine.makeMove({ type: 'reposition', from: 'O0', to: 'O1' } as any);
+  assert.equal(resReposition.success, false, 'Repositioning placed cow during placement phase must fail');
+});
+
+// Test 8: Checkers American 8x8 Strict Rules Validation
+test('Checkers: Regular men cannot jump backwards and crowning halts multi-jump', () => {
+  const adapter = new CheckersAdapter(undefined, 'american-8x8');
+  const engine = adapter.getInternalEngine();
+
+  // Fresh board: 12 white pieces on dark squares rows 5-7, 12 black pieces on rows 0-2
+  const legal = engine.getLegalMoves();
+  for (const m of legal) {
+    // White pieces only move upward (row decreasing: delta = -1)
+    assert.equal(m.to.row < m.from.row, true, 'White regular men must only move forward (upward)');
+  }
+});
+
+

@@ -167,12 +167,8 @@ export const MorabarabaBoard: React.FC<MorabarabaBoardProps> = ({
   // Determine valid destinations for a cow
   const getValidTargetsForCow = (point: PointId, s = stateRef.current): PointId[] => {
     if (s.phase === 'placing') {
-      // In placing phase, sliding adjacent or relocating
-      const adjacent = s.variant === 'koti-25' ? ADJACENCY_25[point] : ADJACENCY_24[point];
-      const emptyAdjacent = adjacent.filter((p) => s.board[p] === null);
-      if (emptyAdjacent.length > 0) return emptyAdjacent;
-      const allPoints = s.variant === 'koti-25' ? ALL_25_POINTS : ALL_24_POINTS;
-      return allPoints.filter((p) => s.board[p] === null);
+      // Placement phase: placed cows are fixed and cannot slide or reposition
+      return [];
     }
     // Moving or flying phase
     return s.legalMoves.filter((m) => m.from === point).map((m) => m.to);
@@ -187,6 +183,14 @@ export const MorabarabaBoard: React.FC<MorabarabaBoardProps> = ({
     if (s.shootPending) {
       if (s.shootableCows.includes(point)) {
         s.onShoot(point);
+      }
+      return;
+    }
+
+    // In placement phase, placed cows cannot move or slide
+    if (s.phase === 'placing') {
+      if (s.onAlert) {
+        s.onAlert('Placement phase: Tap an empty intersection to place a cow from reserve. Placed cows cannot move until all 24 cows are on the board.');
       }
       return;
     }
@@ -306,20 +310,16 @@ export const MorabarabaBoard: React.FC<MorabarabaBoardProps> = ({
           const curr = stateRef.current;
           if (dRef.source === 'reserve') {
             curr.onPlace(nearest);
-          } else if (curr.phase === 'placing') {
-            if (curr.onReposition) {
-              curr.onReposition(dRef.source, nearest);
-            } else {
-              curr.onMove(dRef.source, nearest);
-            }
-          } else {
+          } else if (curr.phase !== 'placing') {
             curr.onMove(dRef.source, nearest);
           }
           setSelectedCow(null);
         }
       } else {
         // Simple tap: keep cow selected
-        setSelectedCow(dRef.source as PointId);
+        if (stateRef.current.phase !== 'placing') {
+          setSelectedCow(dRef.source as PointId);
+        }
       }
 
       setDragVisual(null);
@@ -343,8 +343,10 @@ export const MorabarabaBoard: React.FC<MorabarabaBoardProps> = ({
     }
 
     // Placing phase empty spot click
-    if (s.phase === 'placing' && s.board[point] === null) {
-      s.onPlace(point);
+    if (s.phase === 'placing') {
+      if (s.board[point] === null) {
+        s.onPlace(point);
+      }
       setSelectedCow(null);
       return;
     }
@@ -353,11 +355,7 @@ export const MorabarabaBoard: React.FC<MorabarabaBoardProps> = ({
     if (selectedCow && s.board[point] === null) {
       const targets = getValidTargetsForCow(selectedCow, s);
       if (targets.includes(point)) {
-        if (s.phase === 'placing' && s.onReposition) {
-          s.onReposition(selectedCow, point);
-        } else {
-          s.onMove(selectedCow, point);
-        }
+        s.onMove(selectedCow, point);
         setSelectedCow(null);
         return;
       }

@@ -395,32 +395,11 @@ export class MorabarabaEngine {
 
   /**
    * Reposition or slide a placed cow during Placement Phase.
+   * NOTE: Under traditional Morabaraba and MSSA tournament rules, cows placed on
+   * the board are fixed and cannot be moved or repositioned during the Placement phase.
    */
-  public repositionCow(from: PointId, to: PointId): { success: boolean; millFormed: boolean } {
-    if (this.winner || this.shootPending || this.phase !== 'placing') {
-      return { success: false, millFormed: false };
-    }
-
-    if (this.board[from] !== this.turn || this.board[to] !== null) {
-      return { success: false, millFormed: false };
-    }
-
-    const prevBoard = { ...this.board };
-    this.board[from] = null;
-    this.board[to] = this.turn;
-
-    const millsFormed = this.countNewlyFormedMills(to, this.turn, prevBoard);
-    this.history.push(`${this.turn.toUpperCase()}:${from}->${to}`);
-    this.lastMove = { from, to };
-
-    if (millsFormed > 0) {
-      this.shootPending = true;
-      this.shootCount = millsFormed;
-      return { success: true, millFormed: true };
-    }
-
-    this.advanceTurnOrPhase();
-    return { success: true, millFormed: false };
+  public repositionCow(_from: PointId, _to: PointId): { success: boolean; millFormed: boolean } {
+    return { success: false, millFormed: false };
   }
 
   /**
@@ -657,7 +636,8 @@ export class MorabarabaEngine {
 
     // Medium: Depth 2, Hard: Depth 3-4
     const depth = difficulty === 'medium' ? 2 : 3;
-    let bestScore = -Infinity;
+    const isBotBlack = this.turn === 'b';
+    let bestScore = isBotBlack ? -Infinity : Infinity;
     let bestAction = legal[0];
 
     for (const m of legal) {
@@ -675,10 +655,19 @@ export class MorabarabaEngine {
         if (shootable.length > 0) clone.shootCow(shootable[0]);
       }
 
-      const score = this.minimax(clone, depth - 1, -Infinity, Infinity, false);
-      if (score > bestScore) {
-        bestScore = score;
-        bestAction = m;
+      const nextIsMax = clone.getTurn() === 'b';
+      const score = this.minimax(clone, depth - 1, -Infinity, Infinity, nextIsMax);
+
+      if (isBotBlack) {
+        if (score > bestScore) {
+          bestScore = score;
+          bestAction = m;
+        }
+      } else {
+        if (score < bestScore) {
+          bestScore = score;
+          bestAction = m;
+        }
       }
     }
 
@@ -728,7 +717,8 @@ export class MorabarabaEngine {
           if (shootable.length > 0) clone.shootCow(shootable[0]);
         }
 
-        const evalScore = this.minimax(clone, depth - 1, alpha, beta, false);
+        const nextIsMax = clone.getTurn() === 'b';
+        const evalScore = this.minimax(clone, depth - 1, alpha, beta, nextIsMax);
         maxEval = Math.max(maxEval, evalScore);
         alpha = Math.max(alpha, evalScore);
         if (beta <= alpha) break;
@@ -746,7 +736,8 @@ export class MorabarabaEngine {
           if (shootable.length > 0) clone.shootCow(shootable[0]);
         }
 
-        const evalScore = this.minimax(clone, depth - 1, alpha, beta, true);
+        const nextIsMax = clone.getTurn() === 'b';
+        const evalScore = this.minimax(clone, depth - 1, alpha, beta, nextIsMax);
         minEval = Math.min(minEval, evalScore);
         beta = Math.min(beta, evalScore);
         if (beta <= alpha) break;
