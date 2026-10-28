@@ -1,0 +1,63 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  handle       String   @unique
+  email        String   @unique
+  passwordHash String
+  displayName  String?
+  avatar       String?
+  playStyle    String?  @default("Tactical")
+  onboarded    Boolean  @default(false)
+  isPro        Boolean  @default(false)
+  stripeCustId String?
+  bulletRating     Int      @default(1200)
+  blitzRating      Int      @default(1200)
+  rapidRating      Int      @default(1200)
+  checkersRating   Int      @default(1200)
+  morabarabaRating Int      @default(1200)
+  xp               Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+  blackMatches Match[]  @relation("BlackPlayer")
+  whiteMatches Match[]  @relation("WhitePlayer")
+
+  @@index([blitzRating])
+  @@index([rapidRating])
+  @@index([bulletRating])
+  @@index([checkersRating])
+  @@index([morabarabaRating])
+  @@index([xp])
+}
+
+model Match {
+  id          String   @id @default(uuid())
+  gameId      String   @default("chess")
+  variant     String?  @default("standard")
+  whiteId     String
+  blackId     String
+  timeControl String
+  winnerId    String?
+  resultType  String
+  pgn         String
+  finalFen    String
+  rated       Boolean  @default(true)
+  ratingDelta Int      @default(0)
+  createdAt   DateTime @default(now())
+  black       User     @relation("BlackPlayer", fields: [blackId], references: [id])
+  white       User     @relation("WhitePlayer", fields: [whiteId], references: [id])
+
+  @@index([whiteId])
+  @@index([blackId])
+  @@index([createdAt])
+  @@index([gameId])
+  @@index([whiteId, blackId])
+}

@@ -1,0 +1,416 @@
+import { NextResponse } from 'next/server';
+import { Chess } from 'chess.js';
+import { prisma } from '@/lib/prisma';
+import { sql } from '@/lib/neon-db';
+import { calculateElo } from '@/lib/elo';
+import { calculateMatchXp } from '@/lib/progression';
+import { checkRateLimit, getClientIp } from '@/lib/rate-limiter';
+import { getSessionFromRequest } from '@/lib/auth-token';
+
+interface MatchesCacheEntry {
+  data: any;
+  timestamp: number;
+}
+
+// In-memory cache for high-throughput match archive queries
+const matchesCache = new Map<string, MatchesCacheEntry>();
+const CACHE_TTL_MS = 30_000; // 30 seconds
+
+export async function POST(req: Request) {
+  try {
+    const ip = getClientIp(req);
+    const rateCheck = checkRateLimit(`match_create_${ip}`, 6, 60);
+    if (!rateCheck.allowed) {
+      return NextResponse.json(
+        { error: `Match archive rate limit reached. Retry in ${rateCheck.resetInSeconds} seconds.` },
+        { status: 429 }
+      );
+    }
+
+    const session = getSessionFromRequest(req);
+    if (!session || !session.userId) {
+      return NextResponse.json(
+        { error: 'Unauthorized: Authentication session required to archive match results.' },
+        { status: 401 }
+      );
+    }
+
+    const {
+      gameId = 'chess',
+      variant = 'standard',
+      whiteId,
+      blackId,
+      timeControl,
+      winnerId,
+      resultType,
+      pgn,
+      finalFen,
+      rated = true,
+    } = await req.json();
+
+    if (!whiteId || !blackId || !timeControl || !resultType || !finalFen) {
+      return NextResponse.json(
+        { error: 'Missing required match parameters.' },
+        { status: 400 }
+      );
+    }
+
+    // Authorization check: Caller must be one of the participants
+    if (session.userId !== whiteId && session.userId !== blackId) {
+      return NextResponse.json(
+        { error: 'Forbidden: You can only record matches that you participated in.' },
+        { status: 403 }
+      );
+    }
+
+    // Cryptographic & Rule-based PGN Replay Verification (only for Chess)
+    if (gameId === 'chess' && pgn && pgn.trim().length > 0) {
+      try {
+        const verifier = new Chess();
+        verifier.loadPgn(pgn);
+
+        if (verifier.history().length < 2) {
+          return NextResponse.json(
+            { error: 'Match must contain at least 2 plies to be archived.' },
+            { status: 400 }
+          );
+        }
+
+        const [vBoard] = verifier.fen().split(' ');
+        const [fBoard] = finalFen.split(' ');
+
+        if (vBoard !== fBoard) {
+          return NextResponse.json(
+            { error: 'Match verification failed: PGN moves do not produce claimed final position.' },
+            { status: 400 }
+          );
+        }
+      } catch {
+        return NextResponse.json(
+          { error: 'Corrupt or illegal PGN notation.' },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Is this an official PvP rated match? (Bots and guest sessions cannot mutate competitive ELO)
+    const isBotOrGuest =
+      whiteId.startsWith('bot_') ||
+      blackId.startsWith('bot_') ||
+      whiteId.startsWith('guest_') ||
+      blackId.startsWith('guest_');
+
+    const shouldAdjustElo = Boolean(rated) && !isBotOrGuest;
+
+    const ensureUser = async (id: string, defaultPrefix: string) => {
+      // 1. Look for existing registered user
+      try {
+        const rows = await sql`SELECT * FROM "User" WHERE "id" = ${id} LIMIT 1`;
+        if (rows[0]) return rows[0];
+      } catch {
+        const existing = await prisma.user.findUnique({ where: { id } });
+        if (existing) return existing;
+      }
+
+      // 2. If it is a known system bot ID, ensure the bot record exists to satisfy foreign key constraints
+      if (id.startsWith('bot_')) {
+        const botHandle = `Bot (${id.replace('bot_', '')})`;
+        try {
+          return await prisma.user.upsert({
+            where: { id },
+            update: { updatedAt: new Date() },
+            create: {
+              id,
+              handle: botHandle,
+              email: `${id}@bot.bibo.internal`,
+              passwordHash: 'system_bot_account',
+              bulletRating: 1200,
+              blitzRating: 1200,
+              rapidRating: 1200,
+              checkersRating: 1200,
+              morabarabaRating: 1200,
+              xp: 0,
+            },
+          });
+        } catch {
+          const fallback = await prisma.user.findUnique({ where: { id } });
+          if (fallback) return fallback;
+        }
+      }
+
+      return null;
+    };
+
+    const [whiteUser, blackUser] = await Promise.all([
+      ensureUser(whiteId, 'TacticianW'),
+      ensureUser(blackId, 'TacticianB'),
+    ]);
+
+    if (!whiteUser || !blackUser) {
+      return NextResponse.json(
+        { error: 'One or more match participants could not be resolved.' },
+        { status: 400 }
+      );
+    }
+
+    let ratingDelta = 0;
+
+    // Determine discipline and time control rating field
+    const minutes = parseInt(timeControl) || 5;
+    const ratingField: 'bulletRating' | 'blitzRating' | 'rapidRating' | 'checkersRating' | 'morabarabaRating' =
+      gameId === 'checkers'
+        ? 'checkersRating'
+        : gameId === 'morabaraba'
+        ? 'morabarabaRating'
+        : minutes < 3
+        ? 'bulletRating'
+        : minutes < 10
+        ? 'blitzRating'
+        : 'rapidRating';
+
+    const whiteRating = (whiteUser as any)[ratingField] ?? 1200;
+    const blackRating = (blackUser as any)[ratingField] ?? 1200;
+    const movesCount = (pgn ? (pgn.match(/\d+\./g) || []).length : 15);
+
+    const whiteResult = winnerId === whiteId ? 'win' : winnerId === blackId ? 'loss' : 'draw';
+    const blackResult = winnerId === blackId ? 'win' : winnerId === whiteId ? 'loss' : 'draw';
+
+    const whiteXp = calculateMatchXp({
+      playerRating: whiteRating,
+      opponentRating: blackRating,
+      result: whiteResult,
+      movesCount,
+    });
+
+    const blackXp = calculateMatchXp({
+      playerRating: blackRating,
+      opponentRating: whiteRating,
+      result: blackResult,
+      movesCount,
+    });
+
+    let newRatingA = whiteRating;
+    let newRatingB = blackRating;
+
+    if (shouldAdjustElo && whiteUser && blackUser) {
+      const scoreWhite =
+        winnerId === whiteId ? 1 : winnerId === blackId ? 0 : 0.5;
+
+      const eloResult = calculateElo(whiteRating, blackRating, scoreWhite);
+      ratingDelta = Math.abs(eloResult.deltaA);
+      newRatingA = eloResult.newRatingA;
+      newRatingB = eloResult.newRatingB;
+
+      try {
+        await prisma.$transaction([
+          prisma.user.update({
+            where: { id: whiteId },
+            data: {
+              [ratingField]: newRatingA,
+              xp: { increment: whiteXp.totalXp },
+            },
+          }),
+          prisma.user.update({
+            where: { id: blackId },
+            data: {
+              [ratingField]: newRatingB,
+              xp: { increment: blackXp.totalXp },
+            },
+          }),
+        ]);
+      } catch (dbErr) {
+        console.warn('Prisma rated match transaction error:', dbErr);
+      }
+    } else {
+      try {
+        await prisma.$transaction([
+          prisma.user.update({
+            where: { id: whiteId },
+            data: { xp: { increment: whiteXp.totalXp } },
+          }),
+          prisma.user.update({
+            where: { id: blackId },
+            data: { xp: { increment: blackXp.totalXp } },
+          }),
+        ]);
+      } catch (dbErr) {
+        console.warn('Prisma unrated match XP update error:', dbErr);
+      }
+    }
+
+    let match: any = null;
+    const matchId = `match_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    try {
+      const inserted = await sql`
+        INSERT INTO "Match" ("id", "gameId", "variant", "whiteId", "blackId", "timeControl", "winnerId", "resultType", "pgn", "finalFen", "rated", "ratingDelta", "createdAt")
+        VALUES (${matchId}, ${gameId}, ${variant}, ${whiteId}, ${blackId}, ${timeControl}, ${winnerId || null}, ${resultType}, ${pgn || ''}, ${finalFen}, ${Boolean(rated)}, ${ratingDelta}, NOW())
+        RETURNING *
+      `;
+      match = inserted[0];
+    } catch {
+      try {
+        match = await prisma.match.create({
+          data: {
+            id: matchId,
+            gameId,
+            variant,
+            whiteId,
+            blackId,
+            timeControl,
+            winnerId: winnerId || null,
+            resultType,
+            pgn: pgn || '',
+            finalFen,
+            rated: Boolean(rated),
+            ratingDelta,
+          },
+        });
+      } catch (prismaErr) {
+        console.error('Match create fallback error:', prismaErr);
+      }
+    }
+
+    // Invalidate match archive cache on new match
+    matchesCache.clear();
+
+    return NextResponse.json({ match: match || { id: matchId, whiteId, blackId, timeControl, resultType } }, { status: 201 });
+  } catch (error) {
+    console.error('Match creation error:', error);
+    return NextResponse.json(
+      { error: 'Failed to record match telemetry.' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const userId = searchParams.get('userId');
+  const cacheKey = `matches_${userId || 'all'}`;
+
+  const cached = matchesCache.get(cacheKey);
+  const now = Date.now();
+
+  // Return from in-memory cache if fresh (< 30s)
+  if (cached && now - cached.timestamp < CACHE_TTL_MS) {
+    return NextResponse.json(cached.data, {
+      headers: {
+        'X-Cache': 'HIT',
+        'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+      },
+    });
+  }
+
+  // Strategy 1: Ultra-fast HTTPS Serverless SQL (Neon port 443, never blocked by firewalls)
+  try {
+    const rows = userId
+      ? await sql`
+          SELECT 
+            m.id, m."whiteId", m."blackId", m."timeControl", m."winnerId", m."resultType", 
+            m.pgn, m."finalFen", m.rated, m."ratingDelta", m."createdAt",
+            w.handle AS "whiteHandle", w.xp AS "whiteXp", w."blitzRating" AS "whiteBlitzRating",
+            b.handle AS "blackHandle", b.xp AS "blackXp", b."blitzRating" AS "blackBlitzRating"
+          FROM "Match" m
+          LEFT JOIN "User" w ON m."whiteId" = w.id
+          LEFT JOIN "User" b ON m."blackId" = b.id
+          WHERE m."whiteId" = ${userId} OR m."blackId" = ${userId}
+          ORDER BY m."createdAt" DESC
+          LIMIT 20
+        `
+      : await sql`
+          SELECT 
+            m.id, m."whiteId", m."blackId", m."timeControl", m."winnerId", m."resultType", 
+            m.pgn, m."finalFen", m.rated, m."ratingDelta", m."createdAt",
+            w.handle AS "whiteHandle", w.xp AS "whiteXp", w."blitzRating" AS "whiteBlitzRating",
+            b.handle AS "blackHandle", b.xp AS "blackXp", b."blitzRating" AS "blackBlitzRating"
+          FROM "Match" m
+          LEFT JOIN "User" w ON m."whiteId" = w.id
+          LEFT JOIN "User" b ON m."blackId" = b.id
+          ORDER BY m."createdAt" DESC
+          LIMIT 20
+        `;
+
+    const matches = rows.map((r: any) => ({
+      id: r.id,
+      whiteId: r.whiteId,
+      blackId: r.blackId,
+      timeControl: r.timeControl,
+      winnerId: r.winnerId,
+      resultType: r.resultType,
+      pgn: r.pgn,
+      finalFen: r.finalFen,
+      rated: r.rated,
+      ratingDelta: r.ratingDelta,
+      createdAt: r.createdAt,
+      white: {
+        handle: r.whiteHandle || (r.whiteId?.startsWith('bot_') ? `Bot (${r.whiteId.replace('bot_', '')})` : (r.whiteId || 'White')),
+        xp: r.whiteXp || 0,
+        blitzRating: r.whiteBlitzRating || 1200,
+      },
+      black: {
+        handle: r.blackHandle || (r.blackId?.startsWith('bot_') ? `Bot (${r.blackId.replace('bot_', '')})` : (r.blackId || 'Black')),
+        xp: r.blackXp || 0,
+        blitzRating: r.blackBlitzRating || 1200,
+      },
+    }));
+
+    const payload = { matches };
+    matchesCache.set(cacheKey, { data: payload, timestamp: now });
+
+    return NextResponse.json(payload, {
+      headers: {
+        'X-Cache': 'NEON-HTTPS',
+        'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+      },
+    });
+  } catch (sqlError) {
+    console.warn('Neon HTTPS match retrieval failed, trying Prisma fallback:', sqlError);
+
+    try {
+      const matches = await prisma.match.findMany({
+        where: userId
+          ? {
+              OR: [{ whiteId: userId }, { blackId: userId }],
+            }
+          : undefined,
+        take: 20,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          white: { select: { handle: true, xp: true, blitzRating: true } },
+          black: { select: { handle: true, xp: true, blitzRating: true } },
+        },
+      });
+
+      const formatted = matches.map((m: any) => ({
+        ...m,
+        white: m.white || { handle: m.whiteId || 'White', xp: 0, blitzRating: 1200 },
+        black: m.black || { handle: m.blackId || 'Black', xp: 0, blitzRating: 1200 },
+      }));
+
+      const payload = { matches: formatted };
+      matchesCache.set(cacheKey, { data: payload, timestamp: now });
+
+      return NextResponse.json(payload, {
+        headers: {
+          'X-Cache': 'PRISMA-FALLBACK',
+          'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+        },
+      });
+    } catch (prismaError) {
+      console.error('All match fetch strategies failed:', prismaError);
+    }
+
+    // Stale cache resilience fallback
+    if (cached) {
+      return NextResponse.json(cached.data, {
+        headers: {
+          'X-Cache': 'STALE-FALLBACK',
+          'Cache-Control': 'public, s-maxage=10, stale-while-revalidate=60',
+        },
+      });
+    }
+
+    // Never 500 on match history to prevent client crash loops
+    return NextResponse.json({ matches: [] }, { status: 200 });
+  }
+}
