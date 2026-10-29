@@ -123,7 +123,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
     { href: '/home', label: 'Home', icon: Home, isActive: (p: string) => p === '/home' || p === '/' },
     { href: '/play', label: 'Play Hub', icon: Gamepad2, badge: 'All', isActive: (p: string) => p === '/play' },
     { href: '/play/chess', label: 'Chess Arena', icon: Swords, badge: 'Live', isActive: (p: string) => p === '/play/chess' },
-    { href: '/play/checkers', label: 'Checkers', icon: Crown, badge: 'Locked', isLocked: true, isActive: (p: string) => p === '/play/checkers' },
+    { href: '/play/checkers', label: 'Checkers', icon: Crown, badge: '8x8', isActive: (p: string) => p === '/play/checkers' },
     { href: '/play/morabaraba', label: 'Morabaraba', icon: Shield, badge: '24-Pt', isActive: (p: string) => p === '/play/morabaraba' },
     { href: '/puzzles', label: 'Puzzles', icon: Target, badge: 'Locked', isLocked: true, isActive: (p: string) => p === '/puzzles' },
   ];

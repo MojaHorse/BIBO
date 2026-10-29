@@ -289,21 +289,34 @@ function PlayHubContent() {
           </button>
 
           {/* Checkers */}
-          <Link
-            href="/play/checkers"
-            className="p-3 rounded-2xl border flex flex-col items-center text-center gap-1.5 transition-all cursor-pointer relative active:scale-95 bg-[#18191e] border-white/[0.06] hover:border-amber-500/40 text-zinc-400 group"
+          <button
+            onClick={() => {
+              haptics.tap();
+              setSelectedGame('checkers');
+            }}
+            className={`p-3 rounded-2xl border flex flex-col items-center text-center gap-1.5 transition-all cursor-pointer relative active:scale-95 ${
+              selectedGame === 'checkers'
+                ? 'bg-gradient-to-b from-[#2a241c] to-[#1c1d22] border-amber-400 shadow-[0_0_16px_rgba(251,191,36,0.2)] ring-1 ring-amber-400/50'
+                : 'bg-[#18191e] border-white/[0.06] hover:border-white/[0.14] text-zinc-400'
+            }`}
           >
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center font-bold bg-amber-500/10 text-amber-400/80 group-hover:text-amber-400">
+            <div
+              className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold ${
+                selectedGame === 'checkers' ? 'bg-amber-500/25 text-amber-400' : 'bg-white/5 text-zinc-400'
+              }`}
+            >
               <Crown className="w-5 h-5" />
             </div>
-            <div className="flex flex-col items-center">
-              <span className="font-black text-xs text-zinc-300 group-hover:text-amber-400 flex items-center gap-1">
-                <span>Checkers</span>
-                <Lock className="w-2.5 h-2.5 text-amber-400" />
+            <div className="flex flex-col">
+              <span className={`font-black text-xs ${selectedGame === 'checkers' ? 'text-white' : 'text-zinc-300'}`}>
+                Checkers
               </span>
-              <span className="text-[10px] text-amber-400/70 font-mono font-medium">Locked</span>
+              <span className="text-[10px] text-zinc-500 font-medium">King Jumps</span>
             </div>
-          </Link>
+            {selectedGame === 'checkers' && (
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-400 ring-2 ring-[#171719]" />
+            )}
+          </button>
 
           {/* Morabaraba */}
           <button

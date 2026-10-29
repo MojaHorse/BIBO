@@ -375,16 +375,13 @@ export default function LandingPage() {
                       <div className="flex items-center gap-1.5 text-[#171719] mb-0.5">
                         <Disc className="w-4 h-4 fill-current text-[#171719]" />
                         <h3 className="text-lg font-black font-sora">Checkers</h3>
-                        <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-amber-500/15 border border-amber-500/30 text-amber-700">
-                          Locked
-                        </span>
                       </div>
-                      <p className="text-xs text-zinc-500 font-medium">Under calibration.</p>
+                      <p className="text-xs text-zinc-500 font-medium">Simple moves. Deep strategy.</p>
                     </div>
                     <Link
                       href="/play/checkers"
-                      className="w-8 h-8 rounded-full bg-zinc-300 text-zinc-700 flex items-center justify-center shrink-0 hover:bg-zinc-400 active:scale-95 transition shadow-sm"
-                      aria-label="Checkers Arena Locked"
+                      className="w-8 h-8 rounded-full bg-[#FF6A00] text-white flex items-center justify-center shrink-0 hover:bg-[#FF173D] hover:scale-110 active:scale-95 transition shadow-sm"
+                      aria-label="Play Checkers"
                     >
                       <ArrowRight className="w-4 h-4" />
                     </Link>

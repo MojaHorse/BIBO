@@ -161,18 +161,30 @@ export function useGameArena<TMove, TBoard, TState>(
     syncStateFromEngine(eng);
   }, [syncStateFromEngine]);
 
+  // Refs for state that shouldn't invalidate callbacks
+  const gameOverRef = useRef(gameOver);
+  gameOverRef.current = gameOver;
+  const whiteTimeRef = useRef(whiteTime);
+  whiteTimeRef.current = whiteTime;
+  const blackTimeRef = useRef(blackTime);
+  blackTimeRef.current = blackTime;
+  const lastMoveRef = useRef(lastMove);
+  lastMoveRef.current = lastMove;
+  const gameActiveRef = useRef(gameActive);
+  gameActiveRef.current = gameActive;
+
   // Execute Move
   const executeMove = useCallback((move: TMove, isBotMove = false) => {
-    if (gameOver) return false;
+    if (gameOverRef.current) return false;
 
     // Invalidate any in-flight bot computation from the previous turn only when user moves
     if (!isBotMove) {
       botGenerationRef.current++;
       const snap = {
         engine: engine.clone(),
-        timeW: whiteTime,
-        timeB: blackTime,
-        lastMove,
+        timeW: whiteTimeRef.current,
+        timeB: blackTimeRef.current,
+        lastMove: lastMoveRef.current,
       };
       setSnapshots((prev) => [...prev, snap]);
     }
@@ -193,7 +205,7 @@ export function useGameArena<TMove, TBoard, TState>(
       if (onSpecialMove) onSpecialMove(res.specialType, move);
     }
 
-    if (!gameActive) setGameActive(true);
+    if (!gameActiveRef.current) setGameActive(true);
     setLastMove(move);
 
     // Sync state
@@ -207,7 +219,15 @@ export function useGameArena<TMove, TBoard, TState>(
     }
 
     return true;
-  }, [engine, gameOver, whiteTime, blackTime, lastMove, gameActive, syncStateFromEngine, onSpecialMove]);
+  }, [engine, syncStateFromEngine, onSpecialMove]);
+
+  // Stable callback refs for bot scheduler
+  const executeMoveRef = useRef(executeMove);
+  executeMoveRef.current = executeMove;
+  const syncStateFromEngineRef = useRef(syncStateFromEngine);
+  syncStateFromEngineRef.current = syncStateFromEngine;
+  const triggerAlertRef = useRef(triggerAlert);
+  triggerAlertRef.current = triggerAlert;
 
   // Sync sound manager enabled state
   useEffect(() => {
@@ -296,7 +316,7 @@ export function useGameArena<TMove, TBoard, TState>(
         if (engine.getFenOrSnapshot() !== positionSnapshot) return;
 
         if (botMove) {
-          executeMove(botMove, true);
+          executeMoveRef.current(botMove, true);
 
           // Multi-jump loop for Checkers or multi-step engine moves where turn stays with bot
           while (
@@ -314,15 +334,15 @@ export function useGameArena<TMove, TBoard, TState>(
             }
             const nextHop = await engine.findBotMove(botDifficulty);
             if (!nextHop) break;
-            executeMove(nextHop, true);
+            executeMoveRef.current(nextHop, true);
           }
         } else {
           // No legal bot moves -> evaluate checkmate / draw
-          syncStateFromEngine(engine);
+          syncStateFromEngineRef.current(engine);
         }
       } catch (err) {
         console.error('[useGameArena] Bot calculation error:', err);
-        triggerAlert('Bot calculation error occurred.');
+        triggerAlertRef.current('Bot calculation error occurred.');
       } finally {
         if (botGenerationRef.current === currentGeneration) {
           isThinkingRef.current = false;
@@ -336,9 +356,11 @@ export function useGameArena<TMove, TBoard, TState>(
       if (botTimerRef.current) {
         clearTimeout(botTimerRef.current);
         botTimerRef.current = null;
+        isThinkingRef.current = false;
+        setIsBotThinking(false);
       }
     };
-  }, [turn, playMode, botColor, gameOver, botDifficulty, engine, executeMove, syncStateFromEngine, cancelPendingBot, triggerAlert]);
+  }, [turn, playMode, botColor, gameOver, botDifficulty, engine, cancelPendingBot]);
 
   // Takeback / Undo
   const takeBack = useCallback(() => {
