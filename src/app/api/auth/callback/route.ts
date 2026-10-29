@@ -2,11 +2,23 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { prisma } from '@/lib/prisma';
 
+function getAppBaseUrl(req: Request): string {
+  const url = new URL(req.url);
+  const forwardedHost = req.headers.get('x-forwarded-host');
+  const forwardedProto = req.headers.get('x-forwarded-proto') || 'https';
+  const detectedOrigin = forwardedHost ? `${forwardedProto}://${forwardedHost}` : url.origin;
+
+  if (detectedOrigin && !detectedOrigin.includes('localhost')) {
+    return detectedOrigin;
+  }
+  return process.env.NEXT_PUBLIC_APP_URL || detectedOrigin;
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const code = url.searchParams.get('code');
-  const next = url.searchParams.get('next') || '/profile?auth=google_verified';
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || url.origin;
+  const next = url.searchParams.get('next') || '/home';
+  const baseUrl = getAppBaseUrl(req);
 
   if (code) {
     try {
@@ -61,5 +73,5 @@ export async function GET(req: Request) {
     }
   }
 
-  return NextResponse.redirect(new URL('/play?error=oauth_callback_failed', baseUrl));
+  return NextResponse.redirect(new URL('/login?error=oauth_callback_failed', baseUrl));
 }

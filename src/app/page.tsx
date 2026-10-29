@@ -33,6 +33,16 @@ export default function LandingPage() {
   const [activeSection, setActiveSection] = useState('home');
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('code');
+      if (code) {
+        window.location.href = `/api/auth/callback?code=${encodeURIComponent(code)}`;
+      }
+    }
+  }, []);
+
+  useEffect(() => {
     const handleScroll = () => {
       const sections = ['home', 'games', 'how-it-works', 'about', 'waitlist'];
       const scrollPos = window.scrollY + 200;

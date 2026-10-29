@@ -1,9 +1,20 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 
-export async function GET(req: Request) {
+function getAppBaseUrl(req: Request): string {
   const url = new URL(req.url);
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || url.origin;
+  const forwardedHost = req.headers.get('x-forwarded-host');
+  const forwardedProto = req.headers.get('x-forwarded-proto') || 'https';
+  const detectedOrigin = forwardedHost ? `${forwardedProto}://${forwardedHost}` : url.origin;
+
+  if (detectedOrigin && !detectedOrigin.includes('localhost')) {
+    return detectedOrigin;
+  }
+  return process.env.NEXT_PUBLIC_APP_URL || detectedOrigin;
+}
+
+export async function GET(req: Request) {
+  const baseUrl = getAppBaseUrl(req);
   const redirectUri = `${baseUrl}/api/auth/callback`;
 
   try {
