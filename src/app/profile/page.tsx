@@ -591,7 +591,7 @@ export default function ProfilePage() {
 
           <div className="flex items-center justify-around sm:justify-start gap-4 py-2 overflow-x-auto">
             {[
-              { id: 1, title: 'First Blood', unlocked: profile.wins >= 1 },
+              { id: 1, title: 'First Strike', unlocked: profile.wins >= 1 },
               { id: 2, title: 'Tactician', unlocked: profile.matchesPlayed >= 5 },
               { id: 3, title: 'Centurion', unlocked: profile.xp >= 500 },
               { id: 4, title: 'Streak Star', unlocked: profile.puzzleHighScore >= 5 },
