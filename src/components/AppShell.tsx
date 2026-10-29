@@ -462,8 +462,9 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             <div className="flex items-center gap-2.5">
               {isAuthenticatedSession(session) && (
                 <Link
-                  href="/compete"
-                  className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-[#222226] hover:bg-[#2a2a30] border border-white/[0.06] text-xs font-mono text-zinc-300 transition"
+                  href="/profile"
+                  title="View your XP and Rank Progression"
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-[#222226] hover:bg-[#2a2a30] border border-white/[0.06] hover:border-white/20 text-xs font-mono text-zinc-300 transition"
                 >
                   <Coins className="w-3.5 h-3.5 text-[#FF6A00]" />
                   <span className="font-bold text-white">{session.xp.toLocaleString()} XP</span>

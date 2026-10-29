@@ -38,6 +38,7 @@ import { getRankFromXp } from '@/lib/progression';
 import { getInsignia, INSIGNIA_MAP } from '@/lib/insignias';
 import { AuthModal } from '@/components/AuthModal';
 import { OnboardingModal } from '@/components/OnboardingModal';
+import { RankLadderModal } from '@/components/RankLadderModal';
 
 interface UserProfileData {
   id: string;
@@ -94,6 +95,7 @@ export default function ProfilePage() {
   const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
   const [authModalTab, setAuthModalTab] = useState<'signin' | 'register'>('register');
   const [onboardingOpen, setOnboardingOpen] = useState<boolean>(false);
+  const [rankLadderOpen, setRankLadderOpen] = useState<boolean>(false);
 
   useEffect(() => {
     const session = getPlayerSession();
@@ -358,10 +360,15 @@ export default function ProfilePage() {
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#222226] border border-white/[0.06] font-mono text-xs">
+            <button
+              onClick={() => setRankLadderOpen(true)}
+              title="Click to view all XP levels & rank ladder"
+              className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#222226] hover:bg-white/[0.08] border border-white/[0.06] hover:border-white/20 font-mono text-xs transition cursor-pointer"
+            >
               <span className="text-zinc-400 font-bold">TOTAL XP:</span>
               <span className="font-bold text-[#FF6A00] text-sm">{profile.xp.toLocaleString()}</span>
-            </div>
+              <ChevronRight className="w-3.5 h-3.5 text-zinc-500" />
+            </button>
 
             <button
               onClick={() => setOnboardingOpen(true)}
@@ -465,11 +472,21 @@ export default function ProfilePage() {
               </p>
             </div>
 
-            {rankInfo.nextTier && (
-              <span className="text-xs text-zinc-400">
-                Next Rank: <strong className="text-white">{rankInfo.nextTier.title}</strong> ({rankInfo.nextTier.minXp.toLocaleString()} XP)
-              </span>
-            )}
+            <div className="flex items-center gap-3 flex-wrap">
+              {rankInfo.nextTier && (
+                <span className="text-xs text-zinc-400">
+                  Next Rank: <strong className="text-white">{rankInfo.nextTier.title}</strong> ({rankInfo.nextTier.minXp.toLocaleString()} XP)
+                </span>
+              )}
+              <button
+                onClick={() => setRankLadderOpen(true)}
+                title="View all XP levels and rank tiers"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#222226] hover:bg-white/[0.08] border border-white/10 text-xs font-bold text-[#FF6A00] transition active:scale-95 cursor-pointer shadow-sm"
+              >
+                <Trophy className="w-3.5 h-3.5" />
+                <span>View All Ranks</span>
+              </button>
+            </div>
           </div>
 
           {/* Division Meter */}
@@ -730,6 +747,11 @@ export default function ProfilePage() {
             }));
           }}
           isExistingUser={Boolean(profile.email || profile.isVerifiedHuman)}
+        />
+        <RankLadderModal
+          isOpen={rankLadderOpen}
+          onClose={() => setRankLadderOpen(false)}
+          currentXp={profile.xp}
         />
       </div>
     </AppShell>
