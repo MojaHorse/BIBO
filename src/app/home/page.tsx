@@ -12,6 +12,7 @@ import {
   Swords,
   Crown,
   Shield,
+  Lock,
 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { BiboCatMascot } from '@/components/brand/BiboLogo';
@@ -168,10 +169,14 @@ export default function HomePage() {
                 </button>
                 <Link
                   href="/friends"
-                  className="px-4 py-2.5 rounded-xl bg-[#222226] hover:bg-[#2a2a30] border border-white/[0.08] text-xs sm:text-sm font-bold text-zinc-200 hover:text-white flex items-center gap-2 active:scale-95 transition cursor-pointer"
+                  className="px-4 py-2.5 rounded-xl bg-[#222226] hover:bg-[#2a2a30] border border-white/[0.08] text-xs sm:text-sm font-bold text-zinc-300 hover:text-white flex items-center gap-2 active:scale-95 transition cursor-pointer"
                 >
-                  <Users className="w-4 h-4 text-[#FF6A00]" />
+                  <Users className="w-4 h-4 text-zinc-400" />
                   <span>Friends</span>
+                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/25 text-amber-400 flex items-center gap-1">
+                    <Lock className="w-2.5 h-2.5" />
+                    <span>Locked</span>
+                  </span>
                 </Link>
               </>
             ) : (
@@ -237,32 +242,33 @@ export default function HomePage() {
               </div>
             </Link>
 
-            {/* Checkers Card */}
+            {/* Checkers Card (Locked) */}
             <Link
               href="/play/checkers"
-              className="group rounded-2xl bg-[#222226] hover:bg-[#27272c] border border-white/[0.08] hover:border-[#FF6A00]/40 p-5 transition-all duration-200 flex flex-col justify-between shadow-lg"
+              className="group rounded-2xl bg-[#222226] hover:bg-[#27272c] border border-white/[0.08] hover:border-amber-500/40 p-5 transition-all duration-200 flex flex-col justify-between shadow-lg opacity-90 hover:opacity-100"
             >
               <div className="flex items-start justify-between">
                 <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500/20 to-red-500/20 border border-amber-500/30 flex items-center justify-center shadow-sm group-hover:scale-105 transition-transform">
                   <Crown className="w-6 h-6 text-amber-400" />
                 </div>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-zinc-400 font-mono">
-                  American 8x8
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-400 font-mono flex items-center gap-1">
+                  <Lock className="w-2.5 h-2.5" />
+                  <span>Locked</span>
                 </span>
               </div>
               <div className="mt-4 flex flex-col">
-                <span className="font-extrabold text-lg text-white group-hover:text-[#FF6A00] transition font-sora">
+                <span className="font-extrabold text-lg text-white group-hover:text-amber-400 transition font-sora">
                   Checkers
                 </span>
                 <span className="text-xs text-zinc-400 font-medium">
-                  Forced jumps, multi-captures, and king crowning.
+                  Forced jumps and king crowning. Under calibration.
                 </span>
               </div>
               <div className="mt-4 pt-3 border-t border-white/[0.06] flex items-center justify-between text-xs font-bold">
-                <span className="text-[11px] text-zinc-500 font-mono">AI & Online</span>
-                <span className="flex items-center gap-1 text-[#FF6A00]">
-                  <span>Play</span>
-                  <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition" />
+                <span className="text-[11px] text-amber-400/80 font-mono">Arena Locked</span>
+                <span className="flex items-center gap-1 text-zinc-400 group-hover:text-amber-400 transition">
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>Locked</span>
                 </span>
               </div>
             </Link>

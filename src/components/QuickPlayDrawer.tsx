@@ -20,6 +20,7 @@ import {
   Sparkles,
   ArrowRight,
   ShieldAlert,
+  Lock,
 } from 'lucide-react';
 
 type MatchMode = 'ranked' | 'bot' | 'friend';
@@ -94,8 +95,10 @@ export const QuickPlayDrawer: React.FC = () => {
 
   // Sync default initial game when drawer opens
   useEffect(() => {
-    if (initialGame) {
+    if (initialGame && initialGame !== 'checkers') {
       setSelectedGame(initialGame);
+    } else {
+      setSelectedGame('chess');
     }
   }, [initialGame]);
 
@@ -354,13 +357,27 @@ export const QuickPlayDrawer: React.FC = () => {
               <div className="grid grid-cols-3 gap-2">
                 {(
                   [
-                    { id: 'chess', title: 'Chess', icon: Swords, color: '#38bdf8' },
-                    { id: 'checkers', title: 'Checkers', icon: Crown, color: '#f59e0b' },
-                    { id: 'morabaraba', title: 'Morabaraba', icon: Shield, color: '#22c55e' },
+                    { id: 'chess', title: 'Chess', icon: Swords, color: '#38bdf8', locked: false },
+                    { id: 'checkers', title: 'Checkers', icon: Crown, color: '#f59e0b', locked: true },
+                    { id: 'morabaraba', title: 'Morabaraba', icon: Shield, color: '#22c55e', locked: false },
                   ] as const
                 ).map((g) => {
                   const Icon = g.icon;
                   const isSelected = selectedGame === g.id;
+                  if (g.locked) {
+                    return (
+                      <div
+                        key={g.id}
+                        className="p-2.5 rounded-xl border border-white/[0.04] bg-[#121315] opacity-50 flex flex-col items-center gap-1.5 cursor-not-allowed select-none relative"
+                      >
+                        <Icon className="w-5 h-5 text-zinc-500" />
+                        <span className="text-xs font-bold text-zinc-500 flex items-center gap-1">
+                          <span>{g.title}</span>
+                          <Lock className="w-2.5 h-2.5 text-amber-500/70" />
+                        </span>
+                      </div>
+                    );
+                  }
                   return (
                     <button
                       key={g.id}

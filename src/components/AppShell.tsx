@@ -27,6 +27,7 @@ import {
   LogIn,
   Bell,
   Sparkles,
+  Lock,
 } from 'lucide-react';
 import { BiboLogo, BiboCatMascot } from '@/components/brand/BiboLogo';
 import {
@@ -122,15 +123,15 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
     { href: '/home', label: 'Home', icon: Home, isActive: (p: string) => p === '/home' || p === '/' },
     { href: '/play', label: 'Play Hub', icon: Gamepad2, badge: 'All', isActive: (p: string) => p === '/play' },
     { href: '/play/chess', label: 'Chess Arena', icon: Swords, badge: 'Live', isActive: (p: string) => p === '/play/chess' },
-    { href: '/play/checkers', label: 'Checkers', icon: Crown, badge: '8x8', isActive: (p: string) => p === '/play/checkers' },
+    { href: '/play/checkers', label: 'Checkers', icon: Crown, badge: 'Locked', isLocked: true, isActive: (p: string) => p === '/play/checkers' },
     { href: '/play/morabaraba', label: 'Morabaraba', icon: Shield, badge: '24-Pt', isActive: (p: string) => p === '/play/morabaraba' },
-    { href: '/puzzles', label: 'Puzzles', icon: Target, badge: 'Daily', isActive: (p: string) => p === '/puzzles' },
+    { href: '/puzzles', label: 'Puzzles', icon: Target, badge: 'Locked', isLocked: true, isActive: (p: string) => p === '/puzzles' },
   ];
 
   // 2. Community & Vault Destinations
   const communityNavItems = [
     { href: '/compete', label: 'Compete & Ranks', icon: Trophy, isActive: (p: string) => p === '/compete' || p === '/rankings' },
-    { href: '/friends', label: 'Friends', icon: Users, isActive: (p: string) => p === '/friends' },
+    { href: '/friends', label: 'Friends', icon: Users, badge: 'Locked', isLocked: true, isActive: (p: string) => p === '/friends' },
     { href: '/archive', label: 'Match Vault', icon: Archive, isActive: (p: string) => p === '/archive' },
     { href: '/settings', label: 'Settings', icon: Settings, isActive: (p: string) => p === '/settings' },
   ];
@@ -139,7 +140,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
     { href: '/home', label: 'Home', icon: Home },
     { href: '/play', label: 'Play', icon: Gamepad2 },
     { href: '/compete', label: 'Compete', icon: Trophy },
-    { href: '/friends', label: 'Friends', icon: Users },
+    { href: '/friends', label: 'Friends', icon: Users, isLocked: true },
     { href: '/profile', label: 'Profile', icon: User },
   ];
 
@@ -256,8 +257,15 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                     {!sidebarCollapsed && <span className="truncate">{item.label}</span>}
                   </div>
                   {!sidebarCollapsed && item.badge && (
-                    <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-white/5 border border-white/10 text-zinc-400 group-hover:text-zinc-300 shrink-0">
-                      {item.badge}
+                    <span
+                      className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded flex items-center gap-1 shrink-0 ${
+                        item.isLocked
+                          ? 'bg-amber-500/10 border border-amber-500/25 text-amber-400'
+                          : 'bg-white/5 border border-white/10 text-zinc-400 group-hover:text-zinc-300'
+                      }`}
+                    >
+                      {item.isLocked && <Lock className="w-2.5 h-2.5" />}
+                      <span>{item.badge}</span>
                     </span>
                   )}
                 </Link>
@@ -283,7 +291,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                   className={`relative flex items-center rounded-xl text-xs font-semibold transition group ${
                     sidebarCollapsed
                       ? 'justify-center p-2.5'
-                      : 'gap-2.5 px-3 py-2.5'
+                      : 'justify-between px-3 py-2.5'
                   } ${
                     isActive
                       ? 'text-white bg-[#222226] shadow-sm'
@@ -293,8 +301,22 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                   {isActive && (
                     <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 rounded-r-full bg-gradient-to-b from-[#FF6A00] to-[#FF173D]" />
                   )}
-                  <Icon className={`w-4 h-4 shrink-0 transition-colors ${isActive ? 'text-[#FF6A00]' : 'text-zinc-400 group-hover:text-white'}`} />
-                  {!sidebarCollapsed && <span className="truncate">{item.label}</span>}
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Icon className={`w-4 h-4 shrink-0 transition-colors ${isActive ? 'text-[#FF6A00]' : 'text-zinc-400 group-hover:text-white'}`} />
+                    {!sidebarCollapsed && <span className="truncate">{item.label}</span>}
+                  </div>
+                  {!sidebarCollapsed && item.badge && (
+                    <span
+                      className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded flex items-center gap-1 shrink-0 ${
+                        item.isLocked
+                          ? 'bg-amber-500/10 border border-amber-500/25 text-amber-400'
+                          : 'bg-white/5 border border-white/10 text-zinc-400 group-hover:text-zinc-300'
+                      }`}
+                    >
+                      {item.isLocked && <Lock className="w-2.5 h-2.5" />}
+                      <span>{item.badge}</span>
+                    </span>
+                  )}
                 </Link>
               );
             })}
@@ -515,7 +537,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                   key={item.href}
                   href={item.href}
                   prefetch={true}
-                  className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition ${
+                  className={`relative flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition ${
                     isActive
                       ? 'text-[#FF6A00] font-bold bg-white/[0.04]'
                       : 'text-zinc-400 hover:text-white'
@@ -523,6 +545,9 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                 >
                   <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-[#FF6A00]' : 'text-zinc-400'}`} />
                   <span className="text-[10px] tracking-tight">{item.label}</span>
+                  {item.isLocked && (
+                    <span className="absolute top-1 right-2 w-2 h-2 rounded-full bg-amber-400 ring-2 ring-[#141416]" />
+                  )}
                 </Link>
               );
             })}
