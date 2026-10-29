@@ -1,4 +1,5 @@
 import { GameId } from './games/types';
+import { getPlayerSession, savePlayerSession, PlayerSession } from './session';
 
 // Resilient offline-first match archive vault & background synchronizer
 
@@ -65,12 +66,16 @@ export async function syncPendingMatches(): Promise<void> {
   const pending = matches.filter((m) => !m.synced);
   if (pending.length === 0) return;
 
+  const session = getPlayerSession();
+
   for (const match of pending) {
     try {
       const res = await fetch('/api/matches', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          gameId: match.gameId || 'chess',
+          variant: match.variant || 'standard',
           whiteId: match.whiteId,
           blackId: match.blackId,
           timeControl: match.timeControl,
@@ -84,6 +89,23 @@ export async function syncPendingMatches(): Promise<void> {
 
       if (res.ok) {
         match.synced = true;
+        const data = await res.json().catch(() => null);
+        if (data?.elo && session.id) {
+          const isWhite = match.whiteId === session.id;
+          const isBlack = match.blackId === session.id;
+          const eloInfo = isWhite ? data.elo.white : isBlack ? data.elo.black : null;
+          if (eloInfo) {
+            const field = data.elo.ratingField;
+            const updates: Partial<PlayerSession> = {
+              rating: eloInfo.newRating,
+            };
+            if (field === 'checkersRating') updates.checkersRating = eloInfo.newRating;
+            else if (field === 'morabarabaRating') updates.morabarabaRating = eloInfo.newRating;
+            else updates.chessRating = eloInfo.newRating;
+
+            savePlayerSession(updates);
+          }
+        }
       }
     } catch {
       // Network drop, will retry on next sync

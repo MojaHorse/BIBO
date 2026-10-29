@@ -5,12 +5,13 @@ function getAppBaseUrl(req: Request): string {
   const url = new URL(req.url);
   const forwardedHost = req.headers.get('x-forwarded-host');
   const forwardedProto = req.headers.get('x-forwarded-proto') || 'https';
-  const detectedOrigin = forwardedHost ? `${forwardedProto}://${forwardedHost}` : url.origin;
-
-  if (detectedOrigin && !detectedOrigin.includes('localhost')) {
-    return detectedOrigin;
+  if (forwardedHost) {
+    return `${forwardedProto}://${forwardedHost}`;
   }
-  return process.env.NEXT_PUBLIC_APP_URL || detectedOrigin;
+  if (url.origin && url.origin !== 'null') {
+    return url.origin;
+  }
+  return process.env.NEXT_PUBLIC_APP_URL || 'https://bibogames.vercel.app';
 }
 
 export async function GET(req: Request) {

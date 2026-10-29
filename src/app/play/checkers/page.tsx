@@ -26,7 +26,8 @@ import { ResignConfirmModal } from '@/components/arena/ResignConfirmModal';
 import { useArenaMode } from '@/lib/arena-mode-context';
 import { checkersCoach, CheckersCoachCommentary } from '@/lib/checkers-coach';
 import { saveMatchToVault, VaultMatch } from '@/lib/match-vault';
-import { getPlayerSession, addSessionXp } from '@/lib/session';
+import { getPlayerSession, savePlayerSession, addSessionXp } from '@/lib/session';
+import { calculateElo } from '@/lib/elo';
 import { useRequireAuth } from '@/lib/useRequireAuth';
 import { setActiveMatch, clearActiveMatch } from '@/lib/active-match';
 import {
@@ -326,8 +327,18 @@ function CheckersContent() {
     const isBlackWinner = arena.gameOver.winner === 'b';
     const isDraw = arena.gameOver.winner === 'draw' || !arena.gameOver.winner;
 
-    const opponentId = arena.playMode === 'bot' ? 'bot_checkers' : arena.playMode === 'local' ? 'local_p2' : 'opponent';
-    const opponentLabel = arena.playMode === 'bot' ? `Bot (${arena.botDifficulty.toUpperCase()})` : arena.playMode === 'local' ? 'Guest Player' : (mp.opponentInfo?.handle || 'Opponent');
+    const opponentId =
+      arena.playMode === 'bot'
+        ? `bot_checkers_${arena.botDifficulty || 'medium'}`
+        : arena.playMode === 'local'
+        ? 'local_p2'
+        : 'opponent';
+    const opponentLabel =
+      arena.playMode === 'bot'
+        ? `Bot (${arena.botDifficulty.toUpperCase()})`
+        : arena.playMode === 'local'
+        ? 'Guest Player'
+        : (mp.opponentInfo?.handle || 'Opponent');
 
     const whitePlayerId = orientation === 'w' ? session.id : opponentId;
     const blackPlayerId = orientation === 'b' ? session.id : opponentId;
@@ -337,6 +348,22 @@ function CheckersContent() {
 
     const earnedXp = isUserWinner ? 25 : isDraw ? 10 : 5;
     addSessionXp(earnedXp);
+
+    const isRated = arena.playMode === 'bot' || Boolean(roomId);
+    const playerRating = session.checkersRating || 1200;
+    const opponentRating =
+      arena.playMode === 'bot'
+        ? (arena.botDifficulty === 'easy' ? 450 : arena.botDifficulty === 'hard' ? 2000 : 1200)
+        : (mp.opponentInfo?.rating || 1200);
+
+    const userScore: 1 | 0.5 | 0 = isUserWinner ? 1 : isDraw ? 0.5 : 0;
+    const eloCalc = calculateElo(playerRating, opponentRating, userScore);
+    const ratingDelta = Math.abs(eloCalc.deltaA);
+    const newCheckersRating = eloCalc.newRatingA;
+
+    if (isRated && session.id && !session.id.startsWith('guest_')) {
+      savePlayerSession({ checkersRating: newCheckersRating });
+    }
 
     const matchPayload: Omit<VaultMatch, 'synced'> = {
       id: `chk_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -351,28 +378,12 @@ function CheckersContent() {
       resultType: arena.gameOver.headline,
       pgn: arena.history.join(' '),
       finalFen: JSON.stringify(adapter.getState().board),
-      rated: !roomId,
-      ratingDelta: isUserWinner ? 15 : isDraw ? 0 : -10,
+      rated: isRated,
+      ratingDelta,
       createdAt: new Date().toISOString(),
     };
 
     saveMatchToVault(matchPayload);
-
-    fetch('/api/matches', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        gameId: 'checkers',
-        whiteId: whitePlayerId,
-        blackId: blackPlayerId,
-        timeControl: `${arena.timeControlMinutes}+0`,
-        winnerId,
-        resultType: arena.gameOver.headline,
-        pgn: arena.history.join(' '),
-        finalFen: JSON.stringify(adapter.getState().board),
-        rated: !roomId,
-      }),
-    }).catch(() => {});
   }, [arena.gameOver, arena.history, orientation, arena.playMode, arena.botDifficulty, arena.timeControlMinutes, roomId, mp.opponentInfo, adapter]);
 
   // Identify pieces belonging to the human player that currently have a mandatory capture

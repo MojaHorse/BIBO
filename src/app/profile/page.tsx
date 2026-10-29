@@ -147,7 +147,9 @@ export default function ProfilePage() {
           onboarded: Boolean(u.onboarded),
           email: u.email,
           isVerifiedHuman: Boolean(u.isVerifiedHuman),
-          blitzRating: u.rating || prev.blitzRating,
+          blitzRating: u.chessRating || u.rating || prev.blitzRating,
+          checkersRating: u.checkersRating || prev.checkersRating,
+          morabarabaRating: u.morabarabaRating || prev.morabarabaRating,
           xp: u.xp || prev.xp,
         }));
       }

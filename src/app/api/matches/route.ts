@@ -102,22 +102,31 @@ export async function POST(req: Request) {
       }
     }
 
-    // Is this an official PvP rated match? (Bots and guest sessions cannot mutate competitive ELO)
-    const isBotOrGuest =
-      whiteId.startsWith('bot_') ||
-      blackId.startsWith('bot_') ||
+    // Only guest/local unauthenticated sessions cannot mutate competitive ELO.
+    // Registered human users playing rated matches (PvP or vs Bots) DO earn/lose ELO.
+    const isGuestOrLocal =
       whiteId.startsWith('guest_') ||
-      blackId.startsWith('guest_');
+      blackId.startsWith('guest_') ||
+      whiteId.startsWith('local_') ||
+      blackId.startsWith('local_');
 
-    const shouldAdjustElo = Boolean(rated) && !isBotOrGuest;
+    const shouldAdjustElo = Boolean(rated) && !isGuestOrLocal;
 
     const ensureUser = async (id: string) => {
       // 1. Look for existing registered user
       const existing = await prisma.user.findUnique({ where: { id } });
       if (existing) return existing;
 
-      // 2. If it is a known system bot ID, ensure the bot record exists
+      // 2. If it is a known system bot ID, ensure the bot record exists with appropriate tier rating
       if (id.startsWith('bot_')) {
+        const idLower = id.toLowerCase();
+        const baseRating = idLower.includes('easy')
+          ? 450
+          : idLower.includes('hard')
+          ? 2000
+          : idLower.includes('master')
+          ? 2600
+          : 1200;
         const botHandle = `Bot (${id.replace('bot_', '')})`;
         try {
           return await prisma.user.upsert({
@@ -128,11 +137,11 @@ export async function POST(req: Request) {
               handle: botHandle,
               email: `${id}@bot.bibo.internal`,
               passwordHash: 'system_bot_account',
-              bulletRating: 1200,
-              blitzRating: 1200,
-              rapidRating: 1200,
-              checkersRating: 1200,
-              morabarabaRating: 1200,
+              bulletRating: baseRating,
+              blitzRating: baseRating,
+              rapidRating: baseRating,
+              checkersRating: baseRating,
+              morabarabaRating: baseRating,
               xp: 0,
             },
           });
@@ -261,7 +270,17 @@ export async function POST(req: Request) {
     // Invalidate match archive cache
     matchesCache.clear();
 
-    return NextResponse.json({ match }, { status: 201 });
+    return NextResponse.json(
+      {
+        match,
+        elo: {
+          ratingField,
+          white: { id: whiteId, previousRating: whiteRating, newRating: newRatingA, delta: newRatingA - whiteRating },
+          black: { id: blackId, previousRating: blackRating, newRating: newRatingB, delta: newRatingB - blackRating },
+        },
+      },
+      { status: 201 }
+    );
   } catch (error) {
     console.error('Match creation error:', error);
     return NextResponse.json(

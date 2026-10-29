@@ -13,7 +13,8 @@ import { GameReviewModal } from '@/components/GameReviewModal';
 import { stockfishClient, GameReviewReport, EvalResult } from '@/lib/stockfish';
 import { chessCoach, CoachCommentary } from '@/lib/chess-coach';
 import { getCapturedPieces } from '@/lib/chess-utils';
-import { getPlayerSession } from '@/lib/session';
+import { getPlayerSession, savePlayerSession } from '@/lib/session';
+import { calculateElo } from '@/lib/elo';
 import { useRequireAuth } from '@/lib/useRequireAuth';
 import { useArenaMode } from '@/lib/arena-mode-context';
 import { saveMatchToVault } from '@/lib/match-vault';
@@ -183,14 +184,41 @@ function ChessArenaContent() {
     const isBlackWinner = arena.gameOver.winner === 'b';
     const isDraw = arena.gameOver.winner === 'draw' || !arena.gameOver.winner;
 
-    const opponentId = arena.playMode === 'bot' ? 'bot_chess' : arena.playMode === 'local' ? 'local_p2' : 'opponent';
-    const opponentLabel = arena.playMode === 'bot' ? `Bot (${arena.botDifficulty})` : arena.playMode === 'local' ? 'Guest Player' : (mp.opponentInfo?.handle || 'Opponent');
+    const opponentId =
+      arena.playMode === 'bot'
+        ? `bot_chess_${arena.botDifficulty || 'medium'}`
+        : arena.playMode === 'local'
+        ? 'local_p2'
+        : 'opponent';
+    const opponentLabel =
+      arena.playMode === 'bot'
+        ? `Bot (${arena.botDifficulty || 'medium'})`
+        : arena.playMode === 'local'
+        ? 'Guest Player'
+        : (mp.opponentInfo?.handle || 'Opponent');
 
     const whitePlayerId = orientation === 'w' ? currentUser.id : opponentId;
     const blackPlayerId = orientation === 'b' ? currentUser.id : opponentId;
 
     const winnerId = isWhiteWinner ? whitePlayerId : isBlackWinner ? blackPlayerId : null;
     const isUserWinner = winnerId === currentUser.id;
+
+    // Calculate live ELO adjustments
+    const isRated = arena.playMode === 'bot' || Boolean(roomId);
+    const playerRating = currentUser.blitzRating || 1200;
+    const opponentRating =
+      arena.playMode === 'bot'
+        ? (arena.botDifficulty === 'easy' ? 450 : arena.botDifficulty === 'hard' ? 2000 : 1200)
+        : (mp.opponentInfo?.rating || 1200);
+
+    const userScore: 1 | 0.5 | 0 = isUserWinner ? 1 : isDraw ? 0.5 : 0;
+    const eloCalc = calculateElo(playerRating, opponentRating, userScore);
+    const ratingDelta = Math.abs(eloCalc.deltaA);
+    const newPlayerRating = eloCalc.newRatingA;
+
+    if (isRated && currentUser.id && !currentUser.id.startsWith('guest_')) {
+      savePlayerSession({ rating: newPlayerRating, chessRating: newPlayerRating });
+    }
 
     saveMatchToVault({
       id: `chs_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -204,8 +232,8 @@ function ChessArenaContent() {
       resultType: arena.gameOver.headline,
       pgn: arena.history.join(' '),
       finalFen: chess.fen(),
-      rated: Boolean(roomId),
-      ratingDelta: isUserWinner ? 16 : isDraw ? 0 : -12,
+      rated: isRated,
+      ratingDelta,
       createdAt: new Date().toISOString(),
     });
   }, [arena.gameOver, arena.history, orientation, arena.playMode, arena.botDifficulty, arena.timeControlMinutes, roomId, mp.opponentInfo, chess, currentUser]);

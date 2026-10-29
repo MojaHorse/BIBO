@@ -25,7 +25,8 @@ import { ResignConfirmModal } from '@/components/arena/ResignConfirmModal';
 import { useArenaMode } from '@/lib/arena-mode-context';
 import { morabarabaCoach, MorabarabaCoachCommentary } from '@/lib/morabaraba-coach';
 import { saveMatchToVault, VaultMatch } from '@/lib/match-vault';
-import { getPlayerSession, addSessionXp } from '@/lib/session';
+import { getPlayerSession, savePlayerSession, addSessionXp } from '@/lib/session';
+import { calculateElo } from '@/lib/elo';
 import { useRequireAuth } from '@/lib/useRequireAuth';
 import { setActiveMatch, clearActiveMatch } from '@/lib/active-match';
 import {
@@ -339,8 +340,18 @@ function MorabarabaContent() {
     const isBlackWinner = arena.gameOver.winner === 'b';
     const isDraw = arena.gameOver.winner === 'draw' || !arena.gameOver.winner;
 
-    const opponentId = arena.playMode === 'bot' ? 'bot_morabaraba' : arena.playMode === 'local' ? 'local_p2' : 'opponent';
-    const opponentLabel = arena.playMode === 'bot' ? `Bot (${arena.botDifficulty.toUpperCase()})` : arena.playMode === 'local' ? 'Guest Player' : (mp.opponentInfo?.handle || 'Opponent');
+    const opponentId =
+      arena.playMode === 'bot'
+        ? `bot_morabaraba_${arena.botDifficulty || 'medium'}`
+        : arena.playMode === 'local'
+        ? 'local_p2'
+        : 'opponent';
+    const opponentLabel =
+      arena.playMode === 'bot'
+        ? `Bot (${arena.botDifficulty.toUpperCase()})`
+        : arena.playMode === 'local'
+        ? 'Guest Player'
+        : (mp.opponentInfo?.handle || 'Opponent');
 
     const whitePlayerId = session.id;
     const blackPlayerId = opponentId;
@@ -350,6 +361,22 @@ function MorabarabaContent() {
 
     const earnedXp = isUserWinner ? 25 : isDraw ? 10 : 5;
     addSessionXp(earnedXp);
+
+    const isRated = arena.playMode === 'bot' || Boolean(roomId);
+    const playerRating = session.morabarabaRating || 1200;
+    const opponentRating =
+      arena.playMode === 'bot'
+        ? (arena.botDifficulty === 'easy' ? 450 : arena.botDifficulty === 'hard' ? 2000 : 1200)
+        : (mp.opponentInfo?.rating || 1200);
+
+    const userScore: 1 | 0.5 | 0 = isUserWinner ? 1 : isDraw ? 0.5 : 0;
+    const eloCalc = calculateElo(playerRating, opponentRating, userScore);
+    const ratingDelta = Math.abs(eloCalc.deltaA);
+    const newMorabarabaRating = eloCalc.newRatingA;
+
+    if (isRated && session.id && !session.id.startsWith('guest_')) {
+      savePlayerSession({ morabarabaRating: newMorabarabaRating });
+    }
 
     const matchPayload: Omit<VaultMatch, 'synced'> = {
       id: `mora_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -364,28 +391,12 @@ function MorabarabaContent() {
       resultType: arena.gameOver.headline,
       pgn: arena.history.join(' '),
       finalFen: JSON.stringify(adapter.getState().board),
-      rated: !roomId,
-      ratingDelta: isUserWinner ? 15 : isDraw ? 0 : -10,
+      rated: isRated,
+      ratingDelta,
       createdAt: new Date().toISOString(),
     };
 
     saveMatchToVault(matchPayload);
-
-    fetch('/api/matches', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        gameId: 'morabaraba',
-        whiteId: whitePlayerId,
-        blackId: blackPlayerId,
-        timeControl: `${arena.timeControlMinutes}+0`,
-        winnerId,
-        resultType: arena.gameOver.headline,
-        pgn: arena.history.join(' '),
-        finalFen: JSON.stringify(adapter.getState().board),
-        rated: !roomId,
-      }),
-    }).catch(() => {});
   }, [arena.gameOver, arena.history, variant, arena.playMode, arena.botDifficulty, arena.timeControlMinutes, roomId, mp.opponentInfo, adapter]);
 
   const handleQuickStartMovingPhase = () => {
