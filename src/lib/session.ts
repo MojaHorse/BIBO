@@ -88,6 +88,15 @@ export function getPlayerSession(): PlayerSession {
     const userStr = localStorage.getItem('obscura_user');
     if (userStr) {
       const u = JSON.parse(userStr);
+      if (u.handle === 'VerifiedTactician' || u.email === 'human.tactician@bibo.internal' || u.id === 'demo_user') {
+        try {
+          localStorage.removeItem('obscura_user');
+          localStorage.removeItem('obscura_xp');
+        } catch {
+          // ignore
+        }
+        return { id: '', handle: '', rating: 1200, xp: 0, isAuthenticated: false, isVerifiedHuman: false };
+      }
       if (u.id && u.handle && !u.id.startsWith('guest_')) {
         return {
           id: u.id,

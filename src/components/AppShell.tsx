@@ -96,6 +96,8 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             isAuthenticated: true,
           };
           savePlayerSession(updated);
+        } else if (data && data.authenticated === false && s.isAuthenticated) {
+          clearPlayerSession();
         }
       })
       .catch(() => {});

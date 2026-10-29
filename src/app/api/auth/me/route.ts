@@ -104,7 +104,10 @@ export async function GET(req: Request) {
     }
 
     if (!user) {
-      return NextResponse.json({ authenticated: false, user: null });
+      const res = NextResponse.json({ authenticated: false, user: null });
+      res.cookies.delete('bibo_session');
+      res.cookies.delete('obscura_session');
+      return res;
     }
 
     const isVerifiedHuman =

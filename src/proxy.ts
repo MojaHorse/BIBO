@@ -17,7 +17,12 @@ export function proxy(request: NextRequest) {
         const base64 = parts[0].replace(/-/g, '+').replace(/_/g, '/');
         const payloadStr = Buffer.from(base64, 'base64').toString('utf8');
         const payload = JSON.parse(payloadStr);
-        if (payload.userId && !payload.userId.startsWith('guest_')) {
+        if (
+          payload.userId &&
+          !payload.userId.startsWith('guest_') &&
+          payload.handle !== 'VerifiedTactician' &&
+          payload.email !== 'human.tactician@bibo.internal'
+        ) {
           isValid = true;
         }
       }
