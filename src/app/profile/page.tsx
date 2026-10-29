@@ -84,6 +84,12 @@ export default function ProfilePage() {
     puzzleHighScore: 0,
   });
 
+  const [disciplineStats, setDisciplineStats] = useState({
+    chess: { matches: 0, wins: 0, winRate: 0 },
+    checkers: { matches: 0, wins: 0, winRate: 0 },
+    morabaraba: { matches: 0, wins: 0, winRate: 0 },
+  });
+
   const [loading, setLoading] = useState<boolean>(true);
   const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
   const [authModalTab, setAuthModalTab] = useState<'signin' | 'register'>('register');
@@ -115,7 +121,12 @@ export default function ProfilePage() {
 
     let savedHighScore = 0;
     try {
-      savedHighScore = parseInt(localStorage.getItem('obscura_puzzle_highscore') || '0', 10);
+      savedHighScore = parseInt(
+        localStorage.getItem('bibo_puzzle_highscore') ||
+        localStorage.getItem('obscura_puzzle_highscore') ||
+        '0',
+        10
+      );
     } catch {
       // ignore
     }
@@ -141,62 +152,113 @@ export default function ProfilePage() {
     };
     window.addEventListener(SESSION_UPDATED_EVENT as any, handleSessionSync);
 
-    // Sync signed Google/OAuth session
-    fetch('/api/auth/me')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.authenticated && data.user) {
-          const u = data.user;
-          const updated: PlayerSession = {
-            id: u.id,
-            handle: u.handle,
-            displayName: u.displayName || u.handle,
-            avatar: u.avatar || 'knight',
-            playStyle: u.playStyle || 'Tactical',
-            onboarded: Boolean(u.onboarded),
-            rating: u.blitzRating || 1200,
-            xp: typeof u.xp === 'number' ? u.xp : (session.xp || 0),
-            email: u.email,
-            isVerifiedHuman: Boolean(u.isVerifiedHuman),
-            avatarUrl: u.avatarUrl,
-            isAuthenticated: true,
-          };
-          savePlayerSession(updated);
+    const loadUserData = async () => {
+      let activeUserId = session.id;
+
+      try {
+        const meRes = await fetch('/api/auth/me');
+        if (meRes.ok) {
+          const data = await meRes.json();
+          if (data?.authenticated && data.user) {
+            const u = data.user;
+            activeUserId = u.id;
+            const updated: PlayerSession = {
+              id: u.id,
+              handle: u.handle,
+              displayName: u.displayName || u.handle,
+              avatar: u.avatar || 'knight',
+              playStyle: u.playStyle || 'Tactical',
+              onboarded: Boolean(u.onboarded),
+              rating: u.blitzRating || 1200,
+              checkersRating: u.checkersRating || 1200,
+              morabarabaRating: u.morabarabaRating || 1200,
+              xp: typeof u.xp === 'number' ? u.xp : (session.xp || 0),
+              email: u.email,
+              isVerifiedHuman: Boolean(u.isVerifiedHuman),
+              avatarUrl: u.avatarUrl,
+              isAuthenticated: true,
+            };
+            savePlayerSession(updated);
+
+            setProfile((prev) => ({
+              ...prev,
+              id: u.id,
+              handle: u.handle,
+              displayName: u.displayName || u.handle,
+              avatar: u.avatar || prev.avatar,
+              playStyle: u.playStyle || prev.playStyle,
+              email: u.email,
+              isVerifiedHuman: Boolean(u.isVerifiedHuman),
+              blitzRating: u.blitzRating ?? 1200,
+              checkersRating: u.checkersRating ?? 1200,
+              morabarabaRating: u.morabarabaRating ?? 1200,
+              xp: typeof u.xp === 'number' ? u.xp : prev.xp,
+            }));
+          }
         }
-      })
-      .catch(() => {});
+      } catch (err) {
+        console.warn('Profile auth sync notice:', err);
+      }
 
-    // Fetch user stats from database
-    fetch(`/api/matches?userId=${session.id}`)
-      .then((res) => res.json())
-      .then((data) => {
-        const matches = data.matches || [];
-        const wins = matches.filter((m: { winnerId: string }) => m.winnerId === session.id).length;
-        const draws = matches.filter((m: { winnerId: string | null }) => !m.winnerId).length;
-        const losses = matches.length - wins - draws;
+      if (activeUserId) {
+        try {
+          const matchRes = await fetch(`/api/matches?userId=${activeUserId}`);
+          if (matchRes.ok) {
+            const data = await matchRes.json();
+            const matches = data.matches || [];
+            const wins = matches.filter((m: { winnerId: string }) => m.winnerId === activeUserId).length;
+            const draws = matches.filter((m: { winnerId: string | null }) => !m.winnerId).length;
+            const losses = matches.length - wins - draws;
 
-        setProfile((prev) => ({
-          ...prev,
-          id: session.id,
-          handle: session.handle,
-          blitzRating: session.rating || prev.blitzRating || 1200,
-          rapidRating: 1200,
-          bulletRating: 1200,
-          xp: session.xp || prev.xp || 0,
-          matchesPlayed: matches.length,
-          wins,
-          draws,
-          losses,
-          puzzleHighScore: savedHighScore,
-        }));
-      })
-      .catch((err) => console.error('Profile fetch error:', err))
-      .finally(() => setLoading(false));
+            const chessM = matches.filter((m: any) => m.gameId === 'chess');
+            const checkersM = matches.filter((m: any) => m.gameId === 'checkers');
+            const moraM = matches.filter((m: any) => m.gameId === 'morabaraba');
+
+            const chessW = chessM.filter((m: any) => m.winnerId === activeUserId).length;
+            const checkersW = checkersM.filter((m: any) => m.winnerId === activeUserId).length;
+            const moraW = moraM.filter((m: any) => m.winnerId === activeUserId).length;
+
+            setDisciplineStats({
+              chess: {
+                matches: chessM.length,
+                wins: chessW,
+                winRate: chessM.length > 0 ? Math.round((chessW / chessM.length) * 100) : 0,
+              },
+              checkers: {
+                matches: checkersM.length,
+                wins: checkersW,
+                winRate: checkersM.length > 0 ? Math.round((checkersW / checkersM.length) * 100) : 0,
+              },
+              morabaraba: {
+                matches: moraM.length,
+                wins: moraW,
+                winRate: moraM.length > 0 ? Math.round((moraW / moraM.length) * 100) : 0,
+              },
+            });
+
+            setProfile((prev) => ({
+              ...prev,
+              matchesPlayed: matches.length,
+              wins,
+              draws,
+              losses,
+              puzzleHighScore: savedHighScore,
+            }));
+          }
+        } catch (err) {
+          console.error('Profile match fetch error:', err);
+        }
+      }
+
+      setLoading(false);
+    };
+
+    loadUserData();
 
     return () => {
       window.removeEventListener(SESSION_UPDATED_EVENT as any, handleSessionSync);
     };
-  }, []);
+  }, [router]);
 
   const rankInfo = getRankFromXp(profile.xp);
   const winRate = profile.matchesPlayed > 0 ? Math.round((profile.wins / profile.matchesPlayed) * 100) : 0;
@@ -425,18 +487,18 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* 3 Core Stats Row (Screen 9) */}
+        {/* 3 Core Stats Row */}
         <div className="grid grid-cols-3 gap-3">
           <div className="p-4 rounded-2xl bg-[#222226] border border-white/[0.08] text-center flex flex-col items-center justify-center shadow-lg">
             <span className="text-2xl sm:text-3xl font-black text-white font-sora">
-              {profile.matchesPlayed > 0 ? profile.matchesPlayed : 128}
+              {profile.matchesPlayed}
             </span>
             <span className="text-xs text-zinc-400 font-bold uppercase tracking-wider mt-1">Games</span>
           </div>
 
           <div className="p-4 rounded-2xl bg-[#222226] border border-white/[0.08] text-center flex flex-col items-center justify-center shadow-lg">
             <span className="text-2xl sm:text-3xl font-black text-[#22C55E] font-sora">
-              {profile.wins > 0 ? profile.wins : 89}
+              {profile.wins}
             </span>
             <span className="text-xs text-zinc-400 font-bold uppercase tracking-wider mt-1">Wins</span>
           </div>
@@ -444,7 +506,7 @@ export default function ProfilePage() {
           <div className="p-4 rounded-2xl bg-[#222226] border border-white/[0.08] text-center flex flex-col items-center justify-center shadow-lg">
             <div className="flex items-center gap-1">
               <span className="text-2xl sm:text-3xl font-black text-[#FF6A00] font-sora">
-                {profile.puzzleHighScore > 0 ? profile.puzzleHighScore : 12}
+                {profile.puzzleHighScore}
               </span>
               <Flame className="w-5 h-5 text-amber-500" />
             </div>
@@ -452,7 +514,7 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* Rating Across Disciplines (Screen 9) */}
+        {/* Rating Across Disciplines */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {/* Chess Rating Card */}
           <div className="p-4 rounded-2xl border border-white/[0.08] bg-[#222226] flex items-center justify-between shadow-lg">
@@ -462,11 +524,15 @@ export default function ProfilePage() {
               </div>
               <div className="flex flex-col">
                 <span className="font-bold text-sm text-white">Chess</span>
-                <span className="text-xs text-zinc-400 font-mono">52% win rate</span>
+                <span className="text-xs text-zinc-400 font-mono">
+                  {disciplineStats.chess.matches > 0
+                    ? `${disciplineStats.chess.winRate}% win rate`
+                    : 'No matches yet'}
+                </span>
               </div>
             </div>
             <span className="text-xl font-black text-white font-sora">
-              {profile.blitzRating || 1380}
+              {profile.blitzRating || 1200}
             </span>
           </div>
 
@@ -478,11 +544,15 @@ export default function ProfilePage() {
               </div>
               <div className="flex flex-col">
                 <span className="font-bold text-sm text-white">Checkers</span>
-                <span className="text-xs text-zinc-400 font-mono">48% win rate</span>
+                <span className="text-xs text-zinc-400 font-mono">
+                  {disciplineStats.checkers.matches > 0
+                    ? `${disciplineStats.checkers.winRate}% win rate`
+                    : 'No matches yet'}
+                </span>
               </div>
             </div>
             <span className="text-xl font-black text-white font-sora">
-              {profile.checkersRating || 1190}
+              {profile.checkersRating || 1200}
             </span>
           </div>
 
@@ -494,45 +564,52 @@ export default function ProfilePage() {
               </div>
               <div className="flex flex-col">
                 <span className="font-bold text-sm text-white">Morabaraba</span>
-                <span className="text-xs text-zinc-400 font-mono">46% win rate</span>
+                <span className="text-xs text-zinc-400 font-mono">
+                  {disciplineStats.morabaraba.matches > 0
+                    ? `${disciplineStats.morabaraba.winRate}% win rate`
+                    : 'No matches yet'}
+                </span>
               </div>
             </div>
             <span className="text-xl font-black text-white font-sora">
-              {profile.morabarabaRating || 1050}
+              {profile.morabarabaRating || 1200}
             </span>
           </div>
         </div>
 
-        {/* Achievements Showcase (Screen 9: 5 Star Badges) */}
+        {/* Achievements Showcase */}
         <div className="rounded-2xl border border-white/[0.08] bg-[#222226] p-4 sm:p-5 flex flex-col gap-3.5 shadow-lg">
           <div className="flex items-center justify-between border-b border-white/[0.06] pb-2">
             <div className="flex items-center gap-2">
               <Trophy className="w-4 h-4 text-[#FF6A00]" />
               <span className="font-extrabold text-sm text-white font-sora">Achievements</span>
             </div>
-            <Link href="/puzzles" className="text-xs font-bold text-[#FF6A00] hover:underline flex items-center gap-1">
-              <span>View all</span>
-              <ChevronRight className="w-3.5 h-3.5" />
-            </Link>
+            <span className="text-xs text-zinc-400 font-mono">
+              {[profile.wins >= 1, profile.matchesPlayed >= 5, profile.xp >= 500, profile.puzzleHighScore >= 5, profile.xp >= 10000].filter(Boolean).length} of 5
+            </span>
           </div>
 
           <div className="flex items-center justify-around sm:justify-start gap-4 py-2 overflow-x-auto">
             {[
-              { id: 1, title: 'First Blood', unlocked: true },
-              { id: 2, title: 'Blitz King', unlocked: true },
-              { id: 3, title: 'Tactician', unlocked: true },
-              { id: 4, title: 'Streak Star', unlocked: true },
-              { id: 5, title: 'Grandmaster', unlocked: false },
+              { id: 1, title: 'First Blood', unlocked: profile.wins >= 1 },
+              { id: 2, title: 'Tactician', unlocked: profile.matchesPlayed >= 5 },
+              { id: 3, title: 'Centurion', unlocked: profile.xp >= 500 },
+              { id: 4, title: 'Streak Star', unlocked: profile.puzzleHighScore >= 5 },
+              { id: 5, title: 'Grandmaster', unlocked: profile.xp >= 10000 },
             ].map((star) => (
               <div key={star.id} className="flex flex-col items-center gap-1.5 shrink-0">
-                <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl transition shadow-md border ${
-                  star.unlocked
-                    ? 'bg-gradient-to-br from-amber-500/25 to-[#FF6A00]/25 border-amber-400/50 text-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.3)]'
-                    : 'bg-white/5 border-white/10 text-zinc-600'
-                }`}>
+                <div
+                  className={`w-12 h-12 rounded-full flex items-center justify-center text-xl transition shadow-md border ${
+                    star.unlocked
+                      ? 'bg-gradient-to-br from-amber-500/25 to-[#FF6A00]/25 border-amber-400/50 text-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.3)]'
+                      : 'bg-white/5 border-white/10 text-zinc-600 grayscale opacity-40'
+                  }`}
+                >
                   ⭐
                 </div>
-                <span className="text-[10px] font-bold text-zinc-400 font-mono">{star.title}</span>
+                <span className={`text-[10px] font-bold font-mono ${star.unlocked ? 'text-zinc-300' : 'text-zinc-600'}`}>
+                  {star.title}
+                </span>
               </div>
             ))}
           </div>
