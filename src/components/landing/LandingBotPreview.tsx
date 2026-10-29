@@ -26,6 +26,17 @@ type PreviewDiscipline = 'chess' | 'checkers' | 'morabaraba';
 export function LandingBotPreview() {
   const [discipline, setDiscipline] = useState<PreviewDiscipline>('chess');
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [hasCompletedPreview, setHasCompletedPreview] = useState(false);
+
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('bibo_preview_completed') === 'true') {
+        setHasCompletedPreview(true);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   // ──────────────────────────────────────────────────────────────────────────
   // 1. CHESS STATE
@@ -64,8 +75,23 @@ export function LandingBotPreview() {
     setIsBotThinking(false);
   }, []);
 
+  const markGameEnded = useCallback((resultText: string, disc: PreviewDiscipline) => {
+    soundManager.playGameEnd();
+    if (disc === 'chess') setChessGameOver(resultText);
+    else if (disc === 'checkers') setCheckersGameOver(resultText);
+    else if (disc === 'morabaraba') setMoraGameOver(resultText);
+
+    try {
+      localStorage.setItem('bibo_preview_completed', 'true');
+    } catch {
+      // ignore
+    }
+    setHasCompletedPreview(true);
+  }, []);
+
   // Reset entire preview without touching external systems
   const resetGame = useCallback((disc: PreviewDiscipline = discipline) => {
+    if (hasCompletedPreview) return;
     clearBotTimer();
     if (disc === 'chess') {
       const c = new Chess();
@@ -85,11 +111,13 @@ export function LandingBotPreview() {
       setMoraSelectedPoint(null);
       setMoraGameOver(null);
     }
-  }, [discipline, clearBotTimer]);
+  }, [discipline, clearBotTimer, hasCompletedPreview]);
 
   const switchDiscipline = (disc: PreviewDiscipline) => {
     setDiscipline(disc);
-    resetGame(disc);
+    if (!hasCompletedPreview) {
+      resetGame(disc);
+    }
   };
 
   // Sync sound settings
@@ -127,9 +155,8 @@ export function LandingBotPreview() {
 
         // Check game over
         if (chessInstance.isGameOver()) {
-          soundManager.playGameEnd();
-          if (chessInstance.isCheckmate()) setChessGameOver('White Wins by Checkmate!');
-          else if (chessInstance.isDraw()) setChessGameOver('Match Drawn');
+          const res = chessInstance.isCheckmate() ? 'White Wins by Checkmate!' : 'Match Drawn';
+          markGameEnded(res, 'chess');
           return true;
         }
 
@@ -164,9 +191,8 @@ export function LandingBotPreview() {
             }
 
             if (chessInstance.isGameOver()) {
-              soundManager.playGameEnd();
-              if (chessInstance.isCheckmate()) setChessGameOver('Bot Wins by Checkmate!');
-              else if (chessInstance.isDraw()) setChessGameOver('Match Drawn');
+              const res = chessInstance.isCheckmate() ? 'Bot Wins by Checkmate!' : 'Match Drawn';
+              markGameEnded(res, 'chess');
             }
           }
 
@@ -207,8 +233,7 @@ export function LandingBotPreview() {
       }
 
       if (newState.winner) {
-        soundManager.playGameEnd();
-        setCheckersGameOver(newState.winner === 'w' ? 'White Wins!' : 'Black Wins!');
+        markGameEnded(newState.winner === 'w' ? 'White Wins!' : 'Black Wins!', 'checkers');
         return;
       }
 
@@ -243,8 +268,7 @@ export function LandingBotPreview() {
             setCheckersState(updated);
 
             if (updated.winner) {
-              soundManager.playGameEnd();
-              setCheckersGameOver(updated.winner === 'w' ? 'White Wins!' : 'Bot Wins!');
+              markGameEnded(updated.winner === 'w' ? 'White Wins!' : 'Bot Wins!', 'checkers');
               setIsBotThinking(false);
               return;
             }
@@ -316,8 +340,7 @@ export function LandingBotPreview() {
       const updated = moraEngine.getState();
       setMoraState(updated);
       if (updated.winner) {
-        soundManager.playGameEnd();
-        setMoraGameOver(updated.winner === 'w' ? 'White Wins!' : 'Bot Wins!');
+        markGameEnded(updated.winner === 'w' ? 'White Wins!' : 'Bot Wins!', 'morabaraba');
       }
 
       setIsBotThinking(false);
@@ -339,8 +362,7 @@ export function LandingBotPreview() {
         return;
       }
       if (s.winner) {
-        soundManager.playGameEnd();
-        setMoraGameOver(s.winner === 'w' ? 'White Wins!' : 'Bot Wins!');
+        markGameEnded(s.winner === 'w' ? 'White Wins!' : 'Bot Wins!', 'morabaraba');
         return;
       }
       triggerMoraBot();
@@ -363,8 +385,7 @@ export function LandingBotPreview() {
         return;
       }
       if (s.winner) {
-        soundManager.playGameEnd();
-        setMoraGameOver(s.winner === 'w' ? 'White Wins!' : 'Bot Wins!');
+        markGameEnded(s.winner === 'w' ? 'White Wins!' : 'Bot Wins!', 'morabaraba');
         return;
       }
       triggerMoraBot();
@@ -383,8 +404,7 @@ export function LandingBotPreview() {
       const s = moraEngine.getState();
       setMoraState(s);
       if (s.winner) {
-        soundManager.playGameEnd();
-        setMoraGameOver(s.winner === 'w' ? 'White Wins!' : 'Bot Wins!');
+        markGameEnded(s.winner === 'w' ? 'White Wins!' : 'Bot Wins!', 'morabaraba');
         return;
       }
       triggerMoraBot();
@@ -478,8 +498,13 @@ export function LandingBotPreview() {
           </button>
           <button
             onClick={() => resetGame()}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white transition cursor-pointer text-xs font-bold"
-            title="Reset position"
+            disabled={hasCompletedPreview}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition text-xs font-bold ${
+              hasCompletedPreview
+                ? 'bg-white/5 text-zinc-500 cursor-not-allowed'
+                : 'bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white cursor-pointer'
+            }`}
+            title={hasCompletedPreview ? 'Preview limit reached' : 'Reset position'}
           >
             <RotateCcw className="w-3.5 h-3.5" />
             <span>Reset</span>
@@ -495,7 +520,7 @@ export function LandingBotPreview() {
             orientation="w"
             lastMove={chessLastMove}
             onMove={handleChessMove}
-            disabled={isBotThinking || Boolean(chessGameOver)}
+            disabled={hasCompletedPreview || isBotThinking || Boolean(chessGameOver)}
             playerColor="w"
           />
         )}
@@ -509,7 +534,7 @@ export function LandingBotPreview() {
             onMove={handleCheckersMove}
             lastMove={checkersLastMove}
             activeMultiJumpPiece={checkersState.activeMultiJumpPiece}
-            disabled={isBotThinking || Boolean(checkersGameOver)}
+            disabled={hasCompletedPreview || isBotThinking || Boolean(checkersGameOver)}
           />
         )}
 
@@ -525,23 +550,23 @@ export function LandingBotPreview() {
             onPlace={handleMoraPlace}
             onMove={handleMoraMove}
             onShoot={handleMoraShoot}
-            disabled={isBotThinking || Boolean(moraGameOver)}
+            disabled={hasCompletedPreview || isBotThinking || Boolean(moraGameOver)}
           />
         )}
 
-        {/* Game Concluded Overlay Banner */}
-        {activeGameOver && (
+        {/* Game Concluded / Preview Limit Overlay Banner */}
+        {(activeGameOver || hasCompletedPreview) && (
           <div className="absolute inset-0 bg-[#070608]/90 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center animate-in fade-in zoom-in-95 duration-200 z-30">
             <div className="w-12 h-12 rounded-full bg-gradient-to-r from-[#FF6A00] to-[#FF173D] text-white flex items-center justify-center mb-3 shadow-lg shadow-[#FF173D]/30">
               <Shield className="w-6 h-6" />
             </div>
             <h4 className="text-2xl font-black text-white font-sora mb-1">
-              {activeGameOver}
+              {activeGameOver || 'Preview Match Completed'}
             </h4>
             <p className="text-xs sm:text-sm text-zinc-300 max-w-sm mb-6">
-              Create a free tactician profile to challenge real players, climb global leaderboards, and save match replays.
+              You&apos;ve completed your free preview match! Create a free tactician profile or sign in to challenge real players, climb global leaderboards, and play unlimited games.
             </p>
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center justify-center gap-3">
               <Link
                 href="/signup"
                 className="px-6 py-2.5 rounded-full bg-gradient-to-r from-[#FF6A00] to-[#FF173D] text-white text-xs sm:text-sm font-black shadow-lg shadow-[#FF173D]/30 hover:scale-105 active:scale-95 transition flex items-center gap-1.5"
@@ -549,12 +574,12 @@ export function LandingBotPreview() {
                 <span>Create Free Account</span>
                 <ArrowRight className="w-4 h-4" />
               </Link>
-              <button
-                onClick={() => resetGame()}
+              <Link
+                href="/login"
                 className="px-5 py-2.5 rounded-full bg-white/10 hover:bg-white/15 text-white text-xs sm:text-sm font-bold transition cursor-pointer"
               >
-                Play Again
-              </button>
+                Sign In
+              </Link>
             </div>
           </div>
         )}
