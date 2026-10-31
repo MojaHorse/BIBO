@@ -93,6 +93,7 @@ export async function POST(
       connected: true,
     };
     room.gameActive = true;
+    room.lastMoveTimestamp = Date.now();
 
     try {
       await prisma.room.update({
@@ -103,6 +104,7 @@ export async function POST(
           blackPlayerRating: Number(player?.rating) || 1200,
           blackPlayerToken: blackToken,
           status: 'active',
+          lastMoveTimestamp: BigInt(room.lastMoveTimestamp),
         },
       });
     } catch (dbErr) {

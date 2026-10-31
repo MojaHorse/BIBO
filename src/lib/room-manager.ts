@@ -62,17 +62,22 @@ if (process.env.NODE_ENV !== 'production') globalForRooms.rooms = activeRooms;
 
 // Publish event to Supabase Realtime channel and local listeners
 export async function broadcastRealtimeEvent(roomId: string, event: string, payload: unknown) {
-  // 1. Supabase Realtime Channel broadcast
+  // 1. Supabase Realtime Channel broadcast via direct REST endpoint
   try {
     const admin = createAdminClient();
     const channel = admin.channel(`room:${roomId}`);
-    await channel.send({
-      type: 'broadcast',
-      event,
-      payload,
-    });
-  } catch {
+    if (typeof (channel as any).httpSend === 'function') {
+      await (channel as any).httpSend(event, payload);
+    } else {
+      await channel.send({
+        type: 'broadcast',
+        event,
+        payload,
+      });
+    }
+  } catch (err) {
     // In local dev/test or offline mode, Realtime broadcast failure does not interrupt logic
+    console.warn('[broadcastRealtimeEvent] Supabase broadcast notice:', err);
   }
 
   // 2. In-memory listeners (for active SSE streams or local tests)

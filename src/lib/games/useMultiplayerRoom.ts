@@ -61,6 +61,8 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
 
   // Keep track of locally-initiated command IDs to identify echoes
   const pendingCommandIdsRef = useRef<Set<string>>(new Set());
+  // Active Supabase Realtime channel reference for direct peer broadcast
+  const channelRef = useRef<any>(null);
 
   // Connect to Multiplayer Room via Supabase Realtime Channels (with SSE fallback)
   useEffect(() => {
@@ -157,6 +159,7 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
     const channel = supabase.channel(`room:${roomId}`, {
       config: { broadcast: { self: false } },
     });
+    channelRef.current = channel;
 
     const handleMoveMade = (payload: any) => {
       if (!isSubscribed) return;
@@ -364,14 +367,43 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
       } catch {}
     });
 
+    // 3. Periodic state recovery poll (guarantees moves appear even if WebSockets/SSE drop)
+    const pollInterval = setInterval(async () => {
+      if (!isSubscribed) return;
+      try {
+        const res = await fetch(`/api/rooms/${roomId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.state && isSubscribed) {
+          const s = data.state;
+          const remoteSeq = s.moveSequence ?? 0;
+          if (remoteSeq > lastSequenceRef.current) {
+            lastSequenceRef.current = remoteSeq;
+            callbacksRef.current.onStateSync(s);
+          }
+          if (s.blackPlayer && !opponentInfo) {
+            setOpponentInfo({ handle: s.blackPlayer.handle, rating: s.blackPlayer.rating, avatar: s.blackPlayer.avatar });
+            setIsWaitingForOpponent(false);
+          }
+          if (s.gameOver) {
+            callbacksRef.current.onGameOver(s.gameOver);
+          }
+        }
+      } catch {
+        // Ignore network blips during polling
+      }
+    }, 2000);
+
     return () => {
       isSubscribed = false;
+      channelRef.current = null;
+      clearInterval(pollInterval);
       channel.unsubscribe();
       if (eventSource) {
         eventSource.close();
       }
     };
-  }, [roomId, gameId]);
+  }, [roomId, gameId, opponentInfo]);
 
   // Transmit move to server room with commandId and expected sequence
   const sendMove = useCallback(
@@ -406,8 +438,27 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
         }
 
         const data = await res.json();
-        if (data.state?.moveSequence) {
-          lastSequenceRef.current = data.state.moveSequence;
+        const nextSequence = data.state?.moveSequence ?? (lastSequenceRef.current + 1);
+        lastSequenceRef.current = nextSequence;
+
+        // Peer-to-peer fast broadcast via active Supabase Realtime channel
+        if (channelRef.current) {
+          try {
+            channelRef.current.send({
+              type: 'broadcast',
+              event: 'move:made',
+              payload: {
+                move: { success: true },
+                lastMove: move,
+                state: data.state,
+                originPlayerId: session.id,
+                commandId,
+                sequence: nextSequence,
+              },
+            });
+          } catch {
+            // direct broadcast error handled gracefully
+          }
         }
 
         return true;

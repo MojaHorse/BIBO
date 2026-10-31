@@ -249,10 +249,11 @@ export function useGameArena<TMove, TBoard, TState>(
     setGameActive(false);
   }, []);
 
-  // Countdown Clock Interval: Active strictly in 'bot' and 'local' modes.
-  // In 'online' mode, the server room is authoritative for clocks; client does NOT self-decrement.
+  // Countdown Clock Interval: Active across bot, local, and online modes.
+  // In online mode, local decrement keeps the clock moving smoothly between moves,
+  // synchronized with authoritative server times on moves and clock syncs.
   useEffect(() => {
-    if (!gameActive || gameOver || playMode === 'online') return;
+    if (!gameActive || gameOver) return;
 
     const interval = setInterval(() => {
       if (turn === 'w') {
@@ -275,7 +276,7 @@ export function useGameArena<TMove, TBoard, TState>(
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [gameActive, turn, gameOver, playMode, handleTimeOut]);
+  }, [gameActive, turn, gameOver, handleTimeOut]);
 
   // Single-Flight Ref-Guarded Bot Auto-Response
   useEffect(() => {

@@ -114,7 +114,22 @@ function ChessArenaContent() {
     gameId: 'chess',
     onStateSync: (s) => {
       try {
-        arena.setEngine(new ChessAdapter(s.fen));
+        if (s.fen) {
+          arena.setEngine(new ChessAdapter(s.fen));
+        }
+        if (s.whiteTime !== undefined && s.blackTime !== undefined) {
+          arena.setWhiteTime(s.whiteTime);
+          arena.setBlackTime(s.blackTime);
+        }
+        if (s.gameActive !== undefined) {
+          arena.setGameActive(s.gameActive);
+        }
+        if (s.history && Array.isArray(s.history)) {
+          arena.setHistory(s.history);
+        }
+        if (s.lastMove) {
+          arena.setLastMove(s.lastMove);
+        }
       } catch {
         // ignore
       }
@@ -127,7 +142,27 @@ function ChessArenaContent() {
       if (payload.isEcho) {
         return;
       }
-      arena.executeMove(payload.lastMove, true);
+      const ok = arena.executeMove(payload.lastMove, true);
+      if (!ok && payload.state?.fen) {
+        try {
+          arena.setEngine(new ChessAdapter(payload.state.fen));
+        } catch {}
+      }
+      if (payload.state) {
+        if (payload.state.whiteTime !== undefined && payload.state.blackTime !== undefined) {
+          arena.setWhiteTime(payload.state.whiteTime);
+          arena.setBlackTime(payload.state.blackTime);
+        }
+        if (payload.state.gameActive !== undefined) {
+          arena.setGameActive(payload.state.gameActive);
+        }
+        if (payload.state.history && Array.isArray(payload.state.history)) {
+          arena.setHistory(payload.state.history);
+        }
+        if (payload.lastMove) {
+          arena.setLastMove(payload.lastMove);
+        }
+      }
     },
     onGameOver: (over) => {
       arena.triggerAlert(`Match Concluded: ${over.reason}`);

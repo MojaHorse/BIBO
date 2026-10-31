@@ -149,9 +149,24 @@ function CheckersContent() {
     gameId: 'checkers',
     onStateSync: (s) => {
       try {
-        const raw = typeof s.fen === 'string' ? JSON.parse(s.fen) : s.fen;
-        const nextEngine = new CheckersAdapter(raw, 'american-8x8');
-        arena.setEngine(nextEngine);
+        if (s.fen) {
+          const raw = typeof s.fen === 'string' ? JSON.parse(s.fen) : s.fen;
+          const nextEngine = new CheckersAdapter(raw, 'american-8x8');
+          arena.setEngine(nextEngine);
+        }
+        if (s.whiteTime !== undefined && s.blackTime !== undefined) {
+          arena.setWhiteTime(s.whiteTime);
+          arena.setBlackTime(s.blackTime);
+        }
+        if (s.gameActive !== undefined) {
+          arena.setGameActive(s.gameActive);
+        }
+        if (s.history && Array.isArray(s.history)) {
+          arena.setHistory(s.history);
+        }
+        if (s.lastMove) {
+          arena.setLastMove(s.lastMove);
+        }
       } catch {
         // ignore
       }
@@ -164,7 +179,28 @@ function CheckersContent() {
       if (payload.isEcho) {
         return;
       }
-      arena.executeMove(payload.lastMove, true);
+      const ok = arena.executeMove(payload.lastMove, true);
+      if (!ok && payload.state?.fen) {
+        try {
+          const raw = typeof payload.state.fen === 'string' ? JSON.parse(payload.state.fen) : payload.state.fen;
+          arena.setEngine(new CheckersAdapter(raw, 'american-8x8'));
+        } catch {}
+      }
+      if (payload.state) {
+        if (payload.state.whiteTime !== undefined && payload.state.blackTime !== undefined) {
+          arena.setWhiteTime(payload.state.whiteTime);
+          arena.setBlackTime(payload.state.blackTime);
+        }
+        if (payload.state.gameActive !== undefined) {
+          arena.setGameActive(payload.state.gameActive);
+        }
+        if (payload.state.history && Array.isArray(payload.state.history)) {
+          arena.setHistory(payload.state.history);
+        }
+        if (payload.lastMove) {
+          arena.setLastMove(payload.lastMove);
+        }
+      }
     },
     onGameOver: (over) => {
       arena.triggerAlert(`Match Concluded: ${over.reason}`);
