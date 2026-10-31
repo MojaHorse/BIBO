@@ -34,7 +34,30 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
   } = options;
 
   const [myRole, setMyRole] = useState<'w' | 'b' | 'spectator' | null>(null);
-  const [myPlayerToken, setMyPlayerToken] = useState<string | null>(null);
+  const [myPlayerToken, setMyPlayerTokenState] = useState<string | null>(() => {
+    if (typeof window === 'undefined' || !roomId) return null;
+    try {
+      return sessionStorage.getItem(`bibo_room_token_${roomId}`);
+    } catch {
+      return null;
+    }
+  });
+
+  const setMyPlayerToken = useCallback(
+    (token: string | null) => {
+      setMyPlayerTokenState(token);
+      if (typeof window !== 'undefined' && roomId) {
+        try {
+          if (token) {
+            sessionStorage.setItem(`bibo_room_token_${roomId}`, token);
+          } else {
+            sessionStorage.removeItem(`bibo_room_token_${roomId}`);
+          }
+        } catch {}
+      }
+    },
+    [roomId]
+  );
   const [opponentInfo, setOpponentInfo] = useState<{ handle: string; rating: number; avatar?: string } | null>(null);
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [isOpponentConnected, setIsOpponentConnected] = useState<boolean>(true);
@@ -505,7 +528,10 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
     try {
       const res = await fetch(`/api/rooms/${roomId}/draw`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-player-token': myPlayerToken || '',
+        },
         body: JSON.stringify({
           action: 'offer',
           playerId: session.id,
@@ -515,6 +541,15 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
       if (res.ok) {
         if (myRole === 'w' || myRole === 'b') {
           setDrawOfferPendingFrom(myRole);
+          if (channelRef.current) {
+            try {
+              channelRef.current.send({
+                type: 'broadcast',
+                event: 'draw:offered',
+                payload: { by: myRole },
+              });
+            } catch {}
+          }
         }
       }
       return res.ok;
@@ -533,7 +568,10 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
       try {
         const res = await fetch(`/api/rooms/${roomId}/draw`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-player-token': myPlayerToken || '',
+          },
           body: JSON.stringify({
             action: accept ? 'accept' : 'decline',
             playerId: session.id,
@@ -542,6 +580,32 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
         });
         if (res.ok) {
           setDrawOfferPendingFrom(null);
+          if (accept) {
+            const over = {
+              winner: 'draw' as const,
+              reason: 'Draw agreed by mutual agreement',
+            };
+            if (channelRef.current) {
+              try {
+                channelRef.current.send({
+                  type: 'broadcast',
+                  event: 'game:over',
+                  payload: { gameOver: over },
+                });
+              } catch {}
+            }
+            callbacksRef.current.onGameOver(over);
+          } else {
+            if (channelRef.current && myRole) {
+              try {
+                channelRef.current.send({
+                  type: 'broadcast',
+                  event: 'draw:declined',
+                  payload: { by: myRole },
+                });
+              } catch {}
+            }
+          }
         }
         return res.ok;
       } catch (err) {
@@ -549,7 +613,7 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
         return false;
       }
     },
-    [roomId, myPlayerToken]
+    [roomId, myPlayerToken, myRole]
   );
 
   // Resign match
@@ -560,18 +624,38 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
     try {
       const res = await fetch(`/api/rooms/${roomId}/resign`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-player-token': myPlayerToken || '',
+        },
         body: JSON.stringify({
           playerId: session.id,
           playerToken: myPlayerToken,
         }),
       });
+      if (res.ok) {
+        const winnerRole: PlayerColor = myRole === 'w' ? 'b' : 'w';
+        const over = {
+          winner: winnerRole,
+          reason: `${myRole === 'w' ? 'White' : 'Black'} resigned`,
+        };
+        if (channelRef.current) {
+          try {
+            channelRef.current.send({
+              type: 'broadcast',
+              event: 'game:over',
+              payload: { gameOver: over },
+            });
+          } catch {}
+        }
+        callbacksRef.current.onGameOver(over);
+      }
       return res.ok;
     } catch (err) {
       console.error('Resignation error:', err);
       return false;
     }
-  }, [roomId, myPlayerToken]);
+  }, [roomId, myPlayerToken, myRole]);
 
   // Offer Rematch
   const offerRematch = useCallback(async () => {
@@ -581,7 +665,10 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
     try {
       const res = await fetch(`/api/rooms/${roomId}/rematch`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-player-token': myPlayerToken || '',
+        },
         body: JSON.stringify({
           action: 'offer',
           playerId: session.id,
@@ -591,6 +678,15 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
       if (res.ok) {
         if (myRole === 'w' || myRole === 'b') {
           setRematchOfferPendingFrom(myRole);
+          if (channelRef.current) {
+            try {
+              channelRef.current.send({
+                type: 'broadcast',
+                event: 'rematch:offered',
+                payload: { by: myRole },
+              });
+            } catch {}
+          }
         }
       }
       return res.ok;
@@ -609,7 +705,10 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
       try {
         const res = await fetch(`/api/rooms/${roomId}/rematch`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-player-token': myPlayerToken || '',
+          },
           body: JSON.stringify({
             action: accept ? 'accept' : 'decline',
             playerId: session.id,
@@ -618,6 +717,18 @@ export function useMultiplayerRoom(options: UseMultiplayerRoomOptions) {
         });
         if (res.ok) {
           setRematchOfferPendingFrom(null);
+          const data = await res.json().catch(() => ({}));
+          if (accept && data.state) {
+            if (channelRef.current) {
+              try {
+                channelRef.current.send({
+                  type: 'broadcast',
+                  event: 'rematch:accepted',
+                  payload: { state: data.state },
+                });
+              } catch {}
+            }
+          }
         }
         return res.ok;
       } catch (err) {

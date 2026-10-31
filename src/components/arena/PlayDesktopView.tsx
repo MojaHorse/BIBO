@@ -608,7 +608,7 @@ export const PlayDesktopView: React.FC<PlayViewSharedProps> = (props) => {
               <GameControls
                 onNewGame={handleNewGame}
                 onFlipBoard={handleFlipBoard}
-                onResign={handleResign}
+                onResign={roomId ? () => setResignConfirmOpen(true) : handleResign}
                 onDrawOffer={handleDrawOffer}
                 onUndo={handleUndo}
                 soundEnabled={soundEnabled}
@@ -731,6 +731,7 @@ export const PlayDesktopView: React.FC<PlayViewSharedProps> = (props) => {
         isOpen={resignConfirmOpen}
         onClose={() => setResignConfirmOpen(false)}
         onConfirm={() => {
+          setResignConfirmOpen(false);
           handleResign();
           if (roomId && onResignMatch) {
             onResignMatch();

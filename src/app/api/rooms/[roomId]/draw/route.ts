@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getDurableRoom, offerDraw, respondDraw, authenticateRoomPlayer } from '@/lib/room-manager';
+import { createClient } from '@/lib/supabase/server';
 
 export async function POST(
   req: Request,
@@ -14,7 +15,20 @@ export async function POST(
   try {
     const { action = 'offer', playerId, playerToken } = await req.json();
 
-    const role = authenticateRoomPlayer(room, req, playerId, playerToken);
+    let role = authenticateRoomPlayer(room, req, playerId, playerToken);
+
+    if (!role) {
+      try {
+        const supabase = await createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user?.id) {
+          if (room.whitePlayer?.id === user.id) role = 'w';
+          else if (room.blackPlayer?.id === user.id) role = 'b';
+        }
+      } catch {
+        // ignore
+      }
+    }
 
     if (!role) {
       return NextResponse.json({ error: 'Unauthorized: Player not authorized for this action' }, { status: 403 });

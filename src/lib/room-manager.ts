@@ -419,9 +419,9 @@ export async function getDurableRoom(roomId: string): Promise<RoomState | null> 
       const engine = hydrateEngine(dbRoom.gameId as GameId, dbRoom.variant, dbRoom.currentState);
 
       let gameOver: { winner: PlayerColor | 'draw' | null; reason: string } | null = null;
-      if (dbRoom.status === 'completed' && dbRoom.winner) {
+      if (dbRoom.status === 'completed') {
         gameOver = {
-          winner: dbRoom.winner as any,
+          winner: (dbRoom.winner === 'w' || dbRoom.winner === 'b') ? dbRoom.winner : 'draw',
           reason: dbRoom.finishReason || 'Match completed',
         };
       } else if (clocks.timedOutPlayer) {

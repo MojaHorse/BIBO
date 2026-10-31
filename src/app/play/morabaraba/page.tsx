@@ -181,6 +181,16 @@ function MorabarabaContent() {
         if (s.lastMove) {
           arena.setLastMove(s.lastMove);
         }
+        if (s.gameOver) {
+          arena.setGameOver({
+            isOver: true,
+            winner: (s.gameOver.winner === 'w' || s.gameOver.winner === 'b') ? s.gameOver.winner : 'draw',
+            headline: s.gameOver.reason || (s.gameOver.winner === 'draw' ? 'Match Drawn' : `${s.gameOver.winner === 'w' ? 'White' : 'Black'} Wins`),
+            subdeck: 'Match concluded.',
+          });
+          arena.setGameActive(false);
+          clearActiveMatch();
+        }
       } catch {
         // ignore
       }
@@ -1330,7 +1340,13 @@ function MorabarabaContent() {
         <ResignConfirmModal
           isOpen={resignConfirmOpen}
           onClose={() => setResignConfirmOpen(false)}
-          onConfirm={() => arena.resign('w')}
+          onConfirm={() => {
+            setResignConfirmOpen(false);
+            arena.resign(mp.myRole === 'b' ? 'b' : 'w');
+            if (roomId) {
+              mp.resignMatch();
+            }
+          }}
         />
       </div>
 

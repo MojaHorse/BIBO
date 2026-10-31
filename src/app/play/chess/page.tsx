@@ -130,6 +130,16 @@ function ChessArenaContent() {
         if (s.lastMove) {
           arena.setLastMove(s.lastMove);
         }
+        if (s.gameOver) {
+          arena.setGameOver({
+            isOver: true,
+            winner: (s.gameOver.winner === 'w' || s.gameOver.winner === 'b') ? s.gameOver.winner : 'draw',
+            headline: s.gameOver.reason || (s.gameOver.winner === 'draw' ? 'Match Drawn' : `${s.gameOver.winner === 'w' ? 'White' : 'Black'} Wins`),
+            subdeck: 'Match concluded.',
+          });
+          arena.setGameActive(false);
+          clearActiveMatch();
+        }
       } catch {
         // ignore
       }
@@ -399,7 +409,12 @@ function ChessArenaContent() {
       arena.resetGame(mins);
     },
     handleFlipBoard,
-    handleResign: () => arena.resign(bottomPlayerColor),
+    handleResign: () => {
+      arena.resign(bottomPlayerColor);
+      if (roomId) {
+        mp.resignMatch();
+      }
+    },
     handleDrawOffer: () => mp.offerDraw(),
     handleUndo: arena.canTakeBack ? () => arena.takeBack() : () => {},
     soundEnabled,
